@@ -1,0 +1,27 @@
+# Public RDP desktop. Export the seccomp profile once next to this file first:
+#   docker run --rm --entrypoint cat ghcr.io/puchunwei/browser-desktop:latest \
+#     /usr/share/browser-desktop/chrome-seccomp.json > chrome-seccomp.json
+services:
+  browser-desktop:
+    image: "${BROWSER_DESKTOP_IMAGE:-ghcr.io/puchunwei/browser-desktop:latest}"
+    container_name: browser-desktop
+    shm_size: "2gb"
+    stop_grace_period: 30s
+    security_opt:
+      - seccomp=./chrome-seccomp.json
+    tmpfs:
+      - /run/xrdp:rw,nosuid,nodev,size=16m,mode=0755
+    ports:
+      - "${RDP_HOST_PORT:-3389}:3389"
+      # CDP is unauthenticated full browser control. To use it from this host only,
+      # set CDP_BIND_ADDRESS=0.0.0.0 below and publish to host loopback:
+      # - "127.0.0.1:9222:9222"
+    environment:
+      DESKTOP_USER: "${DESKTOP_USER:-browser}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      LANGUAGE: "${LANGUAGE:-zh_CN}"
+    volumes:
+      - browser-desktop-data:/data
+    restart: unless-stopped
+volumes:
+  browser-desktop-data:
