@@ -1,0 +1,26 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Unit tests
+        run: |
+          python3 -I tests/test-reconnects.py
+          bash tests/privacy-scan.test.sh
+      - name: Repository privacy scan
+        run: bash tests/privacy-scan.sh tree .
+      - name: Build
+        run: docker build -f image/Dockerfile --build-arg IMAGE_REVISION="$GITHUB_SHA" -t browser-desktop:ci .
+      - name: Image privacy scan
+        run: bash tests/privacy-scan.sh image browser-desktop:ci
+      - name: Startup checks
+        run: REQUIRE_SANDBOX=0 bash tests/startup-checks.sh browser-desktop:ci
