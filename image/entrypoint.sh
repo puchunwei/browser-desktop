@@ -212,4 +212,10 @@ prefs.setdefault('download', {}).update(default_directory=os.environ['BROWSER_DO
 p.write_text(json.dumps(prefs))
 PYTHON
 chown -R "$DESKTOP_USER:$DESKTOP_USER" "$BROWSER_PROFILE_DIR" "$BROWSER_DOWNLOADS_DIR"
+# Chrome runs as the desktop user. If it cannot reach its profile it silently uses a
+# default one and ignores --remote-debugging-port, so check the path as that user.
+for dir in "$BROWSER_PROFILE_DIR" "$BROWSER_DOWNLOADS_DIR"; do
+    /usr/sbin/runuser -u "$DESKTOP_USER" -- test -w "$dir" -a -x "$dir" \
+        || fail "$dir must be writable by the desktop user (uid 1000); check the permissions of every parent directory"
+done
 exec /usr/bin/supervisord -c /etc/supervisor/browser.conf

@@ -50,6 +50,9 @@ expect_refusal bad-tz 'unknown TZ' "${base[@]}" -e TZ=Mars/Base
 "${docker[@]}" run --rm -v "$prefix-newer:/data" --entrypoint sh "$image" \
     -c 'mkdir -p /data/profile && echo 999.0.0.0 > "/data/profile/Last Version"'
 expect_refusal newer-profile 'refusing to downgrade' "${base[@]}" -v "$prefix-newer:/data"
+"${docker[@]}" volume create "$prefix-private" >/dev/null
+"${docker[@]}" run --rm -v "$prefix-private:/data" --entrypoint sh "$image" -c 'chown 4242:4242 /data && chmod 0700 /data'
+expect_refusal private-data 'must be writable by the desktop user' "${base[@]}" -v "$prefix-private:/data"
 
 # First start on an empty volume with a custom account and Docker's default seccomp.
 "${docker[@]}" volume create "$prefix-alice" >/dev/null
