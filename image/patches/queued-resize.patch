@@ -1,0 +1,47 @@
+--- a/xrdp/xrdp_mm.c
++++ b/xrdp/xrdp_mm.c
+@@ -1760,13 +1760,8 @@
+     pro = (struct xrdp_process *) id;
+     wm = pro->wm;
+ 
+-    if (OUTPUT_SUPPRESSED_FOR_REASON(wm->client_info,
+-                                     XSO_REASON_CLIENT_REQUEST))
+-    {
+-        LOG(LOG_LEVEL_INFO, "dynamic_monitor_data: Not allowing resize."
+-            " Suppress output requested by client");
+-        return error;
+-    }
++    /* A rotating mobile client may send its new layout while output is
++     * suppressed. Queue it now and start it after output resumes. */
+ 
+     g_memset(&ls, 0, sizeof(ls));
+     ls.data = data;
+@@ -2109,6 +2104,15 @@
+         return 0;
+     }
+ 
++    /* Finish an active resize, but defer new ones while the viewer is hidden.
++     * The resume callback wakes resize_ready; do not spin on this event. */
++    if (self->resize_data == NULL &&
++            OUTPUT_SUPPRESSED_FOR_REASON(wm->client_info,
++                                         XSO_REASON_CLIENT_REQUEST))
++    {
++        return 0;
++    }
++
+     if (self->resize_data == NULL && self->resize_queue != NULL)
+     {
+         if  (self->resize_queue->count <= 0)
+@@ -2304,6 +2308,12 @@
+             self->mod->mod_suppress_output(self->mod, suppress,
+                                            left, top, right, bottom);
+         }
++    }
++    if (!suppress && self->resize_ready != NULL_WAIT_OBJ &&
++            (self->resize_data != NULL ||
++             (self->resize_queue != NULL && self->resize_queue->count > 0)))
++    {
++        g_set_wait_obj(self->resize_ready);
+     }
+     return 0;
+ }

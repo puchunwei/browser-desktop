@@ -1,0 +1,21 @@
+# trixie for everything; only the RDP stack comes from forky (xrdp 0.10 with GFX/H.264),
+# for GFX/H.264 support.
+Package: *
+Pin: release n=trixie
+Pin-Priority: 990
+
+Package: *
+Pin: release n=trixie-updates
+Pin-Priority: 990
+
+Package: *
+Pin: release n=trixie-security
+Pin-Priority: 990
+
+Package: xrdp xorgxrdp libx264-165
+Pin: release n=forky
+Pin-Priority: 991
+
+Package: *
+Pin: release n=forky
+Pin-Priority: -1

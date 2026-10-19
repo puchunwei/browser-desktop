@@ -1,0 +1,17 @@
+browser-desktop
+Copyright 2026 puchunwei. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository and image include or modify the following third-party material:
+
+- xrdp 0.10.6.1 (Apache License 2.0), https://github.com/neutrinolabs/xrdp.
+  The image is built from the upstream release tarball with the patches in
+  image/patches/ (also shipped at /usr/share/doc/browser-desktop/patches/).
+- seccomp/chrome.json is derived from the Moby default seccomp profile
+  (Apache License 2.0); see seccomp/NOTICE.
+- Google Chrome is proprietary software from Google LLC, installed unmodified from
+  Google's Linux repository. Use of the image is subject to the Google Chrome Terms
+  of Service: https://www.google.com/chrome/terms/
+- All other packages come unmodified from Debian. Their licenses are in
+  /usr/share/doc/<package>/copyright inside the image; exact versions are listed in
+  /usr/share/doc/browser-desktop/packages.txt, and corresponding sources are
+  available from https://snapshot.debian.org/ by package name and version.

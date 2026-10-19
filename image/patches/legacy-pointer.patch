@@ -1,0 +1,31 @@
+--- a/libxrdp/xrdp_caps.c
++++ b/libxrdp/xrdp_caps.c
+@@ -402,7 +402,8 @@
+     {
+         LOG(LOG_LEVEL_INFO, "xrdp_caps_process_pointer: new(color) cursor is "
+             "disabled by config");
+-        self->client_info.pointer_flags = 0;
++        /* Preserve the config flag for subsequent resize negotiations. */
++        self->client_info.pointer_flags = 2;
+     }
+     return 0;
+ }
+@@ -1029,6 +1030,18 @@
+         self->client_info.offscreen_cache_entries = 0;
+     }
+ 
++    /* xorgxrdp 0.10 also uses the large-pointer flag to select ARGB
++     * cursors. Without new-pointer support libxrdp can only send 24 bpp
++     * color pointers, so keep both capability flags consistent. This
++     * preserves fastpath output while allowing legacy AND-mask cursors. */
++    if ((self->client_info.pointer_flags & 1) == 0 &&
++            self->client_info.large_pointer_support_flags != 0)
++    {
++        LOG(LOG_LEVEL_INFO, "Client Capability: new(color) cursors unavailable, "
++            "all large cursor support disabled");
++        self->client_info.large_pointer_support_flags = 0;
++    }
++
+     if (self->client_info.use_fast_path)
+     {
+         if ((self->client_info.large_pointer_support_flags & LARGE_POINTER_FLAG_96x96) &&

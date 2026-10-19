@@ -1,0 +1,1096 @@
+Backport RDP Unicode input to xrdp 0.10.6.1.
+
+Upstream Apache-2.0 sources:
+- https://github.com/neutrinolabs/xrdp/pull/3058
+  merge 98d0003715be1e0693817f49925d48b558df69bb
+- https://github.com/neutrinolabs/xrdp/pull/3090
+  merge 5c4278ccb16c5cce7134face70b13c061217537e
+
+Base: xrdp-0.10.6.1.tar.gz, SHA-256
+2f7beb5a3b2529c8d72dc0df9b8cdca31ab0e0c14d1e3421210f5e6ec0ab3b75
+
+Adaptation: omit upstream CI edits, refresh Autotools context, append Unicode
+state after existing vmconnect field to preserve existing field offsets.
+Local lifecycle adaptation: retain one bus/factory/main loop per chansrv session;
+restore an owned previous engine name on viewer disconnect, guard engine
+references, and wait with bounds for factory/engine readiness. Fail chansrv
+explicitly on bus loss. Do not log committed Unicode code points.
+Regenerate Autotools files with autoreconf -fi before configuring --enable-ibus.
+
+diff --git a/common/xrdp_client_info.h b/common/xrdp_client_info.h
+index eb61742..5ab12e3 100644
+--- a/common/xrdp_client_info.h
++++ b/common/xrdp_client_info.h
+@@ -90,6 +90,15 @@ enum xrdp_capture_code
+     CC_GFX_A2       = 5
+ };
+ 
++/**
++ * Type describing Unicode input state
++ */
++enum unicode_input_state
++{
++    UIS_UNSUPPORTED = 0, ///< Client does not support Unicode
++    UIS_SUPPORTED,       ///< Client supports Unicode, but it's not active
++    UIS_ACTIVE           ///< Unicode input is active
++};
+ /**
+  * Information about the xrdp client
+  *
+@@ -254,6 +263,8 @@ struct xrdp_client_info
+     enum client_resize_mode client_resize_mode;
+ 
+     int vmconnect; /* Used when used from inside Hyper-V */
++
++    enum unicode_input_state unicode_input_support;
+ };
+ 
+ enum xrdp_encoder_flags
+diff --git a/configure.ac b/configure.ac
+index 7d466b5..7a28367 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -166,6 +166,10 @@ AC_ARG_ENABLE(mp3lame, AS_HELP_STRING([--enable-mp3lame],
+               [Build lame mp3(audio codec) (default: no)]),
+               [], [enable_mp3lame=no])
+ AM_CONDITIONAL(XRDP_MP3LAME, [test x$enable_mp3lame = xyes])
++AC_ARG_ENABLE(ibus, AS_HELP_STRING([--enable-ibus],
++              [Allow unicode input via IBus) (default: no)]),
++              [], [enable_ibus=no])
++AM_CONDITIONAL(XRDP_IBUS, [test x$enable_ibus = xyes])
+ AC_ARG_ENABLE(pixman, AS_HELP_STRING([--enable-pixman],
+               [Use pixman library (default: no)]),
+               [], [enable_pixman=no])
+@@ -485,6 +489,20 @@ then
+     [AC_MSG_ERROR([please install libmp3lame-dev or lamemp3-devel])])
+ fi
+ 
++# checking for ibus includes
++if test "x$enable_ibus" = "xyes"
++then
++  PKG_CHECK_MODULES([IBUS], [ibus-1.0 >= 1.5], [],
++    [AC_MSG_ERROR([please install libibus-1.0-dev or ibus-devel])])
++
++  PKG_CHECK_MODULES([XTST], [xtst], [],
++    [AC_MSG_ERROR([please install libxtst-dev or libXtst-devel])])
++
++  # ibus uses dbus which depends on glib
++  PKG_CHECK_MODULES([GLIB2], [glib-2.0 >= 2.56], [],
++    [AC_MSG_ERROR([please install libglib2.0-dev or glib2.0-devel])])
++fi
++
+ AS_IF( [test "x$enable_pixman" = "xyes"] , [PKG_CHECK_MODULES(PIXMAN, pixman-1 >= 0.1.0)] )
+ 
+ AS_IF( [test "x$enable_x264" = "xyes"] , [PKG_CHECK_MODULES(XRDP_X264, x264 >= 0.3.0)] )
+@@ -672,6 +690,7 @@ echo "  fuse                            $enable_fuse"
+ echo "  ipv6                            $enable_ipv6"
+ echo "  ipv6only                        $enable_ipv6only"
+ echo "  vsock                           $enable_vsock"
++echo "  ibus                            $enable_ibus"
+ echo "  auth mechanism                  $auth_mech"
+ echo "  rdpsndaudin                     $enable_rdpsndaudin"
+ echo "  smartcard (not for production)  $enable_smartcard"
+diff --git a/libxrdp/xrdp_caps.c b/libxrdp/xrdp_caps.c
+index f33c144..2f03d5f 100644
+--- a/libxrdp/xrdp_caps.c
++++ b/libxrdp/xrdp_caps.c
+@@ -427,6 +427,27 @@ xrdp_caps_process_input(struct xrdp_rdp *self, struct stream *s,
+     {
+         self->client_info.use_fast_path &= ~2;
+     }
++
++    // We always advertise Unicode support, so if the client supports it too,
++    // we can use it.
++    //
++    // If Unicode support is already active, the CAPSTYPE_INPUT
++    // PDU has been received as part of a Deactivation-Reactivation sequence.
++    // In this case, ignore the flag.
++    if (self->client_info.unicode_input_support != UIS_ACTIVE)
++    {
++        if ((inputFlags & INPUT_FLAG_UNICODE) != 0)
++        {
++            self->client_info.unicode_input_support = UIS_SUPPORTED;
++            LOG(LOG_LEVEL_INFO, "Client supports Unicode input");
++        }
++        else
++        {
++            self->client_info.unicode_input_support = UIS_UNSUPPORTED;
++            LOG(LOG_LEVEL_INFO, "Client does not support Unicode input");
++        }
++    }
++
+     return 0;
+ }
+ 
+diff --git a/sesman/chansrv/Makefile.am b/sesman/chansrv/Makefile.am
+index ba1cf2a..9690a38 100644
+--- a/sesman/chansrv/Makefile.am
++++ b/sesman/chansrv/Makefile.am
+@@ -72,7 +72,15 @@ xrdp_chansrv_SOURCES = \
+   xcommon.c \
+   xcommon.h \
+   audin.c \
+-  audin.h
++  audin.h \
++  input.h
++
++if XRDP_IBUS
++AM_CPPFLAGS += -DXRDP_IBUS $(IBUS_CFLAGS) $(GLIB2_CFLAGS) $(XTST_CFLAGS)
++CHANSRV_EXTRA_LIBS += $(IBUS_LIBS) $(GLIB2_LIBS) $(XTST_LIBS)
++xrdp_chansrv_SOURCES += \
++  input_ibus.c
++endif
+ 
+ if XRDP_SMARTCARD
+ AM_CPPFLAGS += -DXRDP_SMARTCARD
+diff --git a/sesman/chansrv/chansrv.c b/sesman/chansrv/chansrv.c
+index 954f867..72a2e3d 100644
+--- a/sesman/chansrv/chansrv.c
++++ b/sesman/chansrv/chansrv.c
+@@ -21,6 +21,10 @@
+ #include <config_ac.h>
+ #endif
+ 
++#ifdef XRDP_IBUS
++#include "input.h"
++#endif
++
+ #include "arch.h"
+ #include "os_calls.h"
+ #include "string_calls.h"
+@@ -770,6 +774,26 @@ chansrv_drdynvc_open(const char *name, int flags,
+     return error;
+ }
+ 
++
++/*****************************************************************************/
++/* tell xrdp we can do Unicode input */
++static int
++chansrv_advertise_unicode_input(int status)
++{
++    struct stream *s = trans_get_out_s(g_con_trans, 8192);
++    if (s == NULL)
++    {
++        return 1;
++    }
++    out_uint32_le(s, 0); /* version */
++    out_uint32_le(s, 8 + 8 + 4);
++    out_uint32_le(s, 20); /* msg id */
++    out_uint32_le(s, 8 + 4);
++    out_uint32_le(s, status);
++    s_mark_end(s);
++    return trans_write_copy(g_con_trans);
++}
++
+ /*****************************************************************************/
+ /* close call from chansrv */
+ int
+@@ -876,6 +900,62 @@ chansrv_drdynvc_send_data(int chan_id, const char *data, int data_bytes)
+     return 0;
+ }
+ 
++#ifdef XRDP_IBUS
++/*****************************************************************************/
++static int
++process_message_unicode_data(struct stream *s)
++{
++    int rv = 0;
++    int key_down;
++    char32_t unicode;
++
++    LOG_DEVEL(LOG_LEVEL_DEBUG, "process_message_unicode_keypress:");
++    if (!s_check_rem(s, 8))
++    {
++        rv = 1;
++    }
++    else
++    {
++        in_uint32_le(s, key_down);
++        in_uint32_le(s, unicode);
++
++        LOG_DEVEL(LOG_LEVEL_DEBUG, "process_message_unicode_keypress: received Unicode key event");
++
++        if (key_down)
++        {
++            rv = xrdp_input_send_unicode(unicode);
++        }
++    }
++
++    return rv;
++}
++
++/*****************************************************************************/
++static int
++process_message_unicode_setup(struct stream *s)
++{
++    int rv = xrdp_input_unicode_init();
++    if (rv == 0)
++    {
++        // Tell xrdp we can support Unicode input
++        rv = chansrv_advertise_unicode_input(0);
++    }
++    else
++    {
++        // Tell xrdp there's a problem starting the framework
++        chansrv_advertise_unicode_input(2);
++    }
++    return rv;
++}
++
++/*****************************************************************************/
++static int
++process_message_unicode_shutdown(struct stream *s)
++{
++    return xrdp_input_unicode_destroy();
++}
++#endif
++
+ /*****************************************************************************/
+ /* returns error */
+ static int
+@@ -928,6 +1008,25 @@ process_message(void)
+             case 19: /* drdynvc data */
+                 rv = process_message_drdynvc_data(s);
+                 break;
++            case 21: /* unicode setup */
++#ifdef XRDP_IBUS
++                rv = process_message_unicode_setup(s);
++#else
++                // We don't support this.
++                rv = chansrv_advertise_unicode_input(1);
++#endif
++                break;
++            case 23: /* unicode key event */
++#ifdef XRDP_IBUS
++                rv = process_message_unicode_data(s);
++#endif
++                break;
++            case 25: /* unicode shut down */
++#ifdef XRDP_IBUS
++                rv = process_message_unicode_shutdown(s);
++#endif
++                break;
++
+             default:
+                 LOG_DEVEL(LOG_LEVEL_ERROR, "process_message: unknown msg %d", id);
+                 break;
+diff --git a/sesman/chansrv/input.h b/sesman/chansrv/input.h
+new file mode 100644
+index 0000000..37cefb0
+--- /dev/null
++++ b/sesman/chansrv/input.h
+@@ -0,0 +1,34 @@
++/**
++ * xrdp: A Remote Desktop Protocol server.
++ *
++ * Copyright (C) Jay Sorg 2004-2014
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++#if !defined(INPUT_H)
++#define INPUT_H
++
++#include "arch.h"
++#include "parse.h"
++
++int
++xrdp_input_send_unicode(char32_t unicode);
++
++int
++xrdp_input_unicode_init(void);
++
++int
++xrdp_input_unicode_destroy(void);
++
++#endif
+diff --git a/sesman/chansrv/input_ibus.c b/sesman/chansrv/input_ibus.c
+new file mode 100644
+index 0000000..17b0337
+--- /dev/null
++++ b/sesman/chansrv/input_ibus.c
+@@ -0,0 +1,438 @@
++/**
++ * xrdp: A Remote Desktop Protocol server.
++ *
++ * Copyright (C) Jay Sorg 2009-2013
++ * Copyright (C) Laxmikant Rashinkar 2009-2012
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#if defined(HAVE_CONFIG_H)
++#include <config_ac.h>
++#endif
++
++#include <glib.h>
++#include <glib-object.h>
++#include <glib/gstdio.h>
++#include <ibus.h>
++#include <unistd.h>
++#include <X11/Xlib.h>
++#include <X11/keysym.h>
++#include <X11/extensions/XTest.h>
++#include "input.h"
++#include "thread_calls.h"
++
++static IBusBus *bus;
++static IBusEngine *g_engine;
++static gchar *focused_context;
++static GMutex engine_mutex;
++static gint factory_ready;
++/* This is the engine name enabled before unicode engine enabled */
++static gchar *last_input_name;
++static int id = 0;
++
++static int
++xrdp_input_enable(void)
++{
++    IBusEngineDesc *desc;
++    const gchar *name;
++
++    if (last_input_name)
++    {
++        /* already enabled */
++        return 0;
++    }
++
++    if (!bus)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_ibus_init: input method switched failed, ibus not connected");
++        return 1;
++    }
++
++    desc = ibus_bus_get_global_engine(bus);
++    if (desc == NULL)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_enable: no current IBus engine");
++        return 1;
++    }
++    name = ibus_engine_desc_get_name(desc);
++    if (name == NULL)
++    {
++        g_object_unref(desc);
++        return 1;
++    }
++    if (!g_ascii_strcasecmp(name, "XrdpIme"))
++    {
++        g_object_unref(desc);
++        return 0;
++    }
++
++    /* remember user's input method, will switch back when disconnect */
++    last_input_name = g_strdup(name);
++    g_object_unref(desc);
++
++    if (!ibus_bus_set_global_engine(bus, "XrdpIme"))
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_enable: input method enable failed");
++        g_clear_pointer(&last_input_name, g_free);
++        return 1;
++    }
++
++    LOG(LOG_LEVEL_INFO, "xrdp_ibus_init: input method switched sucessfully, old input name: %s", last_input_name);
++
++    return 0;
++}
++
++/* Chromium GTK3 binds its XIM client window only after a native key event.
++ * A first phone Unicode commit otherwise targets IBus's fake desktop context.
++ * Prime only an unbound context, without producing text or changing a held key. */
++static int
++xrdp_input_prime_context(void)
++{
++    Display *display = XOpenDisplay(NULL);
++    KeyCode shift;
++    char keys[32];
++    int event_base, error_base, major, minor;
++    int rv = 1;
++
++    if (display == NULL)
++    {
++        return 1;
++    }
++    shift = XKeysymToKeycode(display, XK_Shift_L);
++    if (shift != 0 &&
++            XTestQueryExtension(display, &event_base, &error_base, &major, &minor))
++    {
++        XQueryKeymap(display, keys);
++        if (keys[shift / 8] & (1 << (shift % 8)))
++        {
++            /* A real modifier is already down; never release the user's key. */
++            rv = 0;
++        }
++        else if (XTestFakeKeyEvent(display, shift, True, CurrentTime))
++        {
++            rv = XTestFakeKeyEvent(display, shift, False, CurrentTime) ? 0 : 1;
++        }
++        XSync(display, False);
++    }
++    XCloseDisplay(display);
++    return rv;
++}
++
++int
++xrdp_input_send_unicode(char32_t unicode)
++{
++    IBusEngine *engine = NULL;
++    unsigned int attempt;
++
++    LOG(LOG_LEVEL_DEBUG, "xrdp_input_send_unicode: received Unicode input event");
++
++    if (xrdp_input_enable())
++    {
++        return 1;
++    }
++
++    g_mutex_lock(&engine_mutex);
++    if (g_engine != NULL)
++    {
++        engine = g_object_ref(g_engine);
++    }
++    g_mutex_unlock(&engine_mutex);
++    if (engine == NULL && xrdp_input_prime_context())
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_send_unicode: could not initialize XIM context");
++        return 1;
++    }
++
++    /* Wait for a real focused application, not IBus's fake desktop context.
++     * The focus callback is delivered on the GLib thread after the native key. */
++    for (attempt = 0; engine == NULL && attempt < 200; ++attempt)
++    {
++        g_mutex_lock(&engine_mutex);
++        if (g_engine != NULL)
++        {
++            engine = g_object_ref(g_engine);
++        }
++        g_mutex_unlock(&engine_mutex);
++        if (engine != NULL)
++        {
++            break;
++        }
++        g_usleep(10000);
++    }
++    if (engine == NULL)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_send_unicode: IBus engine not ready");
++        return 1;
++    }
++
++    ibus_engine_commit_text(engine, ibus_text_new_from_unichar(unicode));
++    g_object_unref(engine);
++
++    return 0;
++}
++
++static void
++xrdp_input_ibus_engine_enable(IBusEngine *engine)
++{
++    LOG(LOG_LEVEL_INFO, "xrdp_ibus_engine_enable: IM enabled");
++}
++
++static void
++xrdp_input_ibus_engine_disable(IBusEngine *engine)
++{
++    IBusEngine *previous = NULL;
++
++    LOG(LOG_LEVEL_INFO, "xrdp_ibus_engine_disable: IM disabled");
++    g_mutex_lock(&engine_mutex);
++    if (g_engine == engine)
++    {
++        previous = g_engine;
++        g_engine = NULL;
++        g_clear_pointer(&focused_context, g_free);
++    }
++    g_mutex_unlock(&engine_mutex);
++    g_clear_object(&previous);
++}
++
++static void
++xrdp_input_ibus_focus_in(IBusEngine *engine,
++                         const gchar *object_path,
++                         const gchar *client)
++{
++    IBusEngine *previous;
++
++    g_mutex_lock(&engine_mutex);
++    previous = g_engine;
++    g_engine = NULL;
++    g_clear_pointer(&focused_context, g_free);
++    if (client != NULL && g_strcmp0(client, "fake") != 0 && object_path != NULL)
++    {
++        g_engine = g_object_ref(engine);
++        focused_context = g_strdup(object_path);
++    }
++    g_mutex_unlock(&engine_mutex);
++    g_clear_object(&previous);
++}
++
++static void
++xrdp_input_ibus_focus_out(IBusEngine *engine, const gchar *object_path)
++{
++    IBusEngine *previous = NULL;
++
++    g_mutex_lock(&engine_mutex);
++    if (g_engine == engine && g_strcmp0(focused_context, object_path) == 0)
++    {
++        previous = g_engine;
++        g_engine = NULL;
++        g_clear_pointer(&focused_context, g_free);
++    }
++    g_mutex_unlock(&engine_mutex);
++    g_clear_object(&previous);
++}
++
++static void
++xrdp_input_ibus_disconnect(IBusBus *disconnected_bus, gpointer user_data)
++{
++    /* A dead bus cannot be reused safely by the live GLib thread. Fail the
++     * channel process rather than leave dangling shared pointers. */
++    LOG(LOG_LEVEL_ERROR, "xrdp_input_ibus_disconnect: IBus connection lost");
++    _exit(1);
++}
++
++static gboolean
++engine_process_key_event_cb(IBusEngine *engine,
++                            guint keyval,
++                            guint keycode,
++                            guint state)
++{
++    /* Pass the keyboard event to system */
++    return FALSE;
++}
++
++static IBusEngine *
++xrdp_input_ibus_create_engine(IBusFactory *factory,
++                              gchar *engine_name,
++                              gpointer user_data)
++{
++    IBusEngine *engine;
++    gchar *path = g_strdup_printf("/org/freedesktop/IBus/Engine/%i", ++id);
++    engine = g_object_new(IBUS_TYPE_ENGINE,
++                           "engine-name", engine_name,
++                           "object-path", path,
++                           "connection", ibus_bus_get_connection(bus),
++                           "has-focus-id", TRUE, NULL);
++    g_free(path);
++    if (engine == NULL)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_ibus_create_engine: engine creation failed");
++        return NULL;
++    }
++
++    LOG(LOG_LEVEL_DEBUG, "xrdp_input_ibus_create_engine: Creating IM Engine with name:%s and id:%d\n", engine_name, id);
++
++    g_signal_connect(engine, "process-key-event", G_CALLBACK(engine_process_key_event_cb), NULL);
++    g_signal_connect(engine, "enable", G_CALLBACK(xrdp_input_ibus_engine_enable), NULL);
++    g_signal_connect(engine, "disable", G_CALLBACK(xrdp_input_ibus_engine_disable), NULL);
++    g_signal_connect(engine, "focus-in-id", G_CALLBACK(xrdp_input_ibus_focus_in), NULL);
++    g_signal_connect(engine, "focus-out-id", G_CALLBACK(xrdp_input_ibus_focus_out), NULL);
++
++    return engine;
++}
++
++/*****************************************************************************/
++static THREAD_RV THREAD_CC
++xrdp_input_main_loop(void *in_val)
++{
++    IBusFactory *factory;
++    IBusComponent *component;
++    IBusEngineDesc *desc;
++    THREAD_RV rv = 0;
++
++    LOG(LOG_LEVEL_DEBUG, "xrdp_input_main_loop: Entering ibus loop");
++
++    g_signal_connect(bus, "disconnected", G_CALLBACK(xrdp_input_ibus_disconnect), NULL);
++
++    factory = ibus_factory_new(ibus_bus_get_connection(bus));
++    g_object_ref_sink(factory);
++    g_signal_connect(factory, "create-engine", G_CALLBACK(xrdp_input_ibus_create_engine), NULL);
++
++    ibus_factory_add_engine(factory, "XrdpIme", IBUS_TYPE_ENGINE);
++
++    component = ibus_component_new("org.freedesktop.IBus.XrdpIme", /* name */
++                                   "Xrdp input method",            /* description */
++                                   "1.1",                          /* version */
++                                   "MIT",                          /* license */
++                                   "seflerZ",                      /* author */
++                                   "default",                      /* homepage */
++                                   "default",                      /* cmd */
++                                   "xrdpime");                     /* text domain */
++
++    desc = ibus_engine_desc_new("XrdpIme",
++                                "unicode input method for xrdp",
++                                "unicode input method for xrdp",
++                                "unicode",
++                                "MIT",
++                                "seflerZ",
++                                "default",  /* icon */
++                                "default"); /* layout */
++
++    ibus_component_add_engine(component, desc);
++    if (!ibus_bus_register_component(bus, component))
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_input_main_loop: engine registration failed");
++        _exit(1);
++    }
++    g_atomic_int_set(&factory_ready, 1);
++
++    ibus_main();
++
++    g_object_unref(desc);
++    g_object_unref(component);
++    g_object_unref(factory);
++
++    LOG(LOG_LEVEL_ERROR, "xrdp_input_main_loop: input loop exited unexpectedly");
++    _exit(1);
++    return rv;
++}
++
++int
++xrdp_input_unicode_destroy(void)
++{
++    int rv = 0;
++
++    LOG(LOG_LEVEL_DEBUG, "xrdp_input_unicode_destory: ibus input is under destory");
++    if (last_input_name)
++    {
++        LOG(LOG_LEVEL_INFO, "xrdp_input_unicode_destory: ibus engine rolling back to origin: %s", last_input_name);
++        if (!ibus_bus_set_global_engine(bus, last_input_name))
++        {
++            LOG(LOG_LEVEL_ERROR, "xrdp_input_unicode_destroy: engine restore failed");
++            rv = 1;
++        }
++    }
++
++    g_clear_pointer(&last_input_name, g_free);
++
++    /* A viewer disconnect is not the end of the desktop session. Keep the
++     * bus, factory and single GLib thread for the next viewer connection. */
++    return rv;
++}
++
++int
++xrdp_input_unicode_init(void)
++{
++    IBusEngineDesc *desc;
++    unsigned int attempt;
++
++    if (bus)
++    {
++        /* Already initialized, just re-enable it */
++        return xrdp_input_enable();
++    }
++
++    /* Wait because the ibus daemon may not be ready on first login */
++    const char *addr = ibus_get_address();
++    unsigned int cnt = 0;
++    while (!addr && cnt < 10)
++    {
++        usleep(500 * 1000); // half a second
++        addr = ibus_get_address();
++        ++cnt;
++    }
++    if (!addr)
++    {
++        LOG(LOG_LEVEL_ERROR,
++            "xrdp_ibus_init: Timed out waiting for iBus daemon");
++        return 1;
++    }
++
++    LOG(LOG_LEVEL_INFO, "xrdp_ibus_init: Initializing the iBus engine");
++    ibus_init();
++    bus = ibus_bus_new();
++    g_object_ref_sink(bus);
++
++    if (!ibus_bus_is_connected(bus))
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_ibus_init: Connect to iBus failed");
++        g_clear_object(&bus);
++        return 1;
++    }
++
++    LOG(LOG_LEVEL_INFO, "xrdp_ibus_init: iBus connected");
++
++    desc = ibus_bus_get_global_engine(bus);
++    if (desc == NULL)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_ibus_init: failed to get origin global engine");
++        g_clear_object(&bus);
++        return 1;
++    }
++    g_object_unref(desc);
++    if (tc_thread_create(xrdp_input_main_loop, NULL) != 0)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_ibus_init: could not start input loop");
++        _exit(1);
++    }
++    for (attempt = 0; attempt < 500; ++attempt)
++    {
++        if (g_atomic_int_get(&factory_ready))
++        {
++            return 0;
++        }
++        g_usleep(10000);
++    }
++    LOG(LOG_LEVEL_ERROR, "xrdp_ibus_init: input factory did not become ready");
++    _exit(1);
++
++    return 1;
++}
+diff --git a/xrdp/Makefile.am b/xrdp/Makefile.am
+index 458369a..7491824 100644
+--- a/xrdp/Makefile.am
++++ b/xrdp/Makefile.am
+@@ -15,8 +15,7 @@ AM_CPPFLAGS = \
+   -I$(top_srcdir)/libipm \
+   -I$(top_srcdir)/libxrdp \
+   -I$(top_srcdir)/third_party \
+-  -I$(top_srcdir)/third_party/tomlc99 \
+-  $(IMLIB2_CFLAGS)
++  -I$(top_srcdir)/third_party/tomlc99
+ 
+ XRDP_EXTRA_LIBS =
+ XRDP_EXTRA_SOURCES =
+diff --git a/xrdp/xrdp.h b/xrdp/xrdp.h
+index c611d5a..dd3db00 100644
+--- a/xrdp/xrdp.h
++++ b/xrdp/xrdp.h
+@@ -510,6 +510,9 @@ xrdp_mm_suppress_output(struct xrdp_mm *self, int suppress,
+                         int left, int top, int right, int bottom);
+ int
+ xrdp_mm_up_and_running(struct xrdp_mm *self);
++int xrdp_mm_send_unicode_to_chansrv(struct xrdp_mm *self,
++                                    int key_down,
++                                    char32_t unicode);
+ struct xrdp_mm *
+ xrdp_mm_create(struct xrdp_wm *owner);
+ void
+diff --git a/xrdp/xrdp_mm.c b/xrdp/xrdp_mm.c
+index 2a6a300..9c016d4 100644
+--- a/xrdp/xrdp_mm.c
++++ b/xrdp/xrdp_mm.c
+@@ -46,6 +46,9 @@ xrdp_mm_chansrv_connect(struct xrdp_mm *self, const char *port);
+ static void
+ xrdp_mm_connect_sm(struct xrdp_mm *self);
+ 
++static int
++xrdp_mm_send_unicode_shutdown(struct xrdp_mm *self, struct trans *trans);
++
+ /*****************************************************************************/
+ static void
+ init_libh264_loaded(struct xrdp_mm *self)
+@@ -179,6 +182,9 @@ xrdp_mm_delete(struct xrdp_mm *self)
+         return;
+     }
+ 
++    /* shutdown input method */
++    xrdp_mm_send_unicode_shutdown(self, self->chan_trans);
++
+     /* free any module stuff */
+     xrdp_mm_module_cleanup(self);
+ 
+@@ -698,6 +704,73 @@ xrdp_mm_trans_process_channel_data(struct xrdp_mm *self, struct stream *s)
+     return rv;
+ }
+ 
++/*****************************************************************************/
++static int
++xrdp_mm_send_unicode_shutdown(struct xrdp_mm *self, struct trans *trans)
++{
++    struct stream *s = trans_get_out_s(self->chan_trans, 8192);
++    if (s == NULL)
++    {
++        return 1;
++    }
++
++    out_uint32_le(s, 0);     /* version */
++    out_uint32_le(s, 8 + 8); /* size */
++    out_uint32_le(s, 25);    /* msg id */
++    out_uint32_le(s, 8);     /* size */
++    s_mark_end(s);
++
++    return trans_write_copy(self->chan_trans);
++}
++
++/*****************************************************************************/
++static int
++xrdp_mm_send_unicode_setup(struct xrdp_mm *self, struct trans *trans)
++{
++    int rv = 0;
++
++    if (self->wm->client_info->unicode_input_support == UIS_SUPPORTED)
++    {
++        struct stream *s = trans_get_out_s(self->chan_trans, 8192);
++        if (s == NULL)
++        {
++            rv = 1;
++        }
++        else
++        {
++            out_uint32_le(s, 0); /* version */
++            out_uint32_le(s, 8 + 8); /* size */
++            out_uint32_le(s, 21); /* msg id */
++            out_uint32_le(s, 8); /* size */
++            s_mark_end(s);
++
++            rv = trans_write_copy(self->chan_trans);
++        }
++    }
++
++    return rv;
++}
++
++/******************************************************************************/
++int xrdp_mm_send_unicode_to_chansrv(struct xrdp_mm *self,
++                                    int key_down,
++                                    char32_t unicode)
++{
++    struct stream *s = trans_get_out_s(self->chan_trans, 8192);
++    if (s == NULL)
++    {
++        return 1;
++    }
++    out_uint32_le(s, 0);  /* version */
++    out_uint32_le(s, 24); /* size */
++    out_uint32_le(s, 23); /* msg id */
++    out_uint32_le(s, 16); /* size */
++    out_uint32_le(s, key_down);
++    out_uint32_le(s, unicode);
++    s_mark_end(s);
++    return trans_write_copy(self->chan_trans);
++}
++
+ /*****************************************************************************/
+ /* returns error
+    process rail create window order */
+@@ -2548,6 +2621,45 @@ xrdp_mm_trans_process_drdynvc_data(struct xrdp_mm *self,
+     return 0;
+ }
+ 
++/*****************************************************************************/
++/* Acknowledgement from chansrv that Unicode input is supported
++ */
++static int
++xrdp_mm_trans_process_unicode_ack(struct xrdp_mm *self,
++                                  struct stream *s)
++{
++    int status;
++    if (!s_check_rem(s, 4))
++    {
++        return 1;
++    }
++    in_uint32_le(s, status);
++    switch (status)
++    {
++        case 0:
++            LOG(LOG_LEVEL_INFO, "Chansrv is handling Unicode input");
++            self->wm->client_info->unicode_input_support = UIS_ACTIVE;
++            break;
++
++        case 1:
++            LOG(LOG_LEVEL_INFO, "Chansrv does not support Unicode input");
++            break;
++
++        case 2:
++            LOG(LOG_LEVEL_INFO,
++                "Chansrv reported an error starting the Unicode input method");
++            break;
++
++        default:
++            LOG(LOG_LEVEL_INFO,
++                "Chansrv reported an unknown status %d"
++                " starting the Unicode input method", status);
++            break;
++    }
++
++    return 0;
++}
++
+ /*****************************************************************************/
+ /* returns error
+    process a message for the channel handler */
+@@ -2600,6 +2712,9 @@ xrdp_mm_chan_process_msg(struct xrdp_mm *self, struct trans *trans,
+             case 18:
+                 rv = xrdp_mm_trans_process_drdynvc_data(self, s);
+                 break;
++            case 20:
++                rv = xrdp_mm_trans_process_unicode_ack(self, s);
++                break;
+             default:
+                 LOG(LOG_LEVEL_ERROR, "xrdp_mm_chan_process_msg: unknown id %d", id);
+                 break;
+@@ -3164,6 +3279,13 @@ xrdp_mm_chansrv_connect(struct xrdp_mm *self, const char *port)
+         trans_delete(self->chan_trans);
+         self->chan_trans = NULL;
+     }
++    else if (xrdp_mm_send_unicode_setup(self, self->chan_trans) != 0)
++    {
++        LOG(LOG_LEVEL_ERROR, "xrdp_mm_chansrv_connect: error in "
++            "xrdp_mm_send_unicode_setup");
++        trans_delete(self->chan_trans);
++        self->chan_trans = NULL;
++    }
+     else
+     {
+         LOG(LOG_LEVEL_DEBUG, "xrdp_mm_chansrv_connect: chansrv "
+diff --git a/xrdp/xrdp_types.h b/xrdp/xrdp_types.h
+index 49c3309..ab8371d 100644
+--- a/xrdp/xrdp_types.h
++++ b/xrdp/xrdp_types.h
+@@ -559,6 +559,9 @@ struct xrdp_wm
+     int caps_lock;
+     int scroll_lock;
+     int num_lock;
++    /* Unicode input */
++    int last_high_surrogate_key_up;
++    int last_high_surrogate_key_down;
+     /* client info */
+     struct xrdp_client_info *client_info;
+     /* session log */
+diff --git a/xrdp/xrdp_wm.c b/xrdp/xrdp_wm.c
+index 2f5c5e8..852f67a 100644
+--- a/xrdp/xrdp_wm.c
++++ b/xrdp/xrdp_wm.c
+@@ -28,6 +28,7 @@
+ #include "ms-rdpbcgr.h"
+ #include "log.h"
+ #include "string_calls.h"
++#include "unicode_defines.h"
+ 
+ /*****************************************************************************/
+ static void
+@@ -1706,15 +1707,66 @@ xrdp_wm_key_sync(struct xrdp_wm *self, int device_flags, int key_flags)
+     return 0;
+ }
+ 
++/*****************************************************************************/
++/**
++ * Takes a stream of UTF-16 characters and  maps then to Unicode characters
++ */
++static char32_t
++get_unicode_character(struct xrdp_wm *self, int device_flags, char16_t c16)
++{
++    char32_t c32 = 0;
++    int *high_ptr;
++
++    if (device_flags & KBD_FLAG_UP)
++    {
++        high_ptr = &self->last_high_surrogate_key_up;
++    }
++    else
++    {
++        high_ptr = &self->last_high_surrogate_key_down;
++    }
++
++    if (IS_HIGH_SURROGATE(c16))
++    {
++        // Record high surrogate for next time
++        *high_ptr = c16;
++    }
++    else if (IS_LOW_SURROGATE(c16))
++    {
++        // If last character was a high surrogate, we can use it
++        if (*high_ptr != 0)
++        {
++            c32 = C32_FROM_SURROGATE_PAIR(c16, *high_ptr);
++            *high_ptr = 0;
++        }
++    }
++    else
++    {
++        // Character maps straight across
++        c32 = c16;
++        *high_ptr = 0;
++    }
++
++    return c32;
++}
++
+ /*****************************************************************************/
+ static int
+-xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t unicode)
++xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t c16)
+ {
+     int index;
++    char32_t c32 = get_unicode_character(self, device_flags, c16);
+ 
++    if (c32 == 0)
++    {
++        return 0;
++    }
++
++    // See if we can find the character in the existing keymap,
++    // and if so, generate normal key event(s) for it
+     for (index = XR_MIN_KEY_CODE; index < XR_MAX_KEY_CODE; index++)
+     {
+-        if (unicode == self->keymap.keys_noshift[index].chr)
++        if (c32 == self->keymap.keys_noshift[index].chr)
+         {
+             xrdp_wm_key(self, device_flags, index - XR_MIN_KEY_CODE);
+             return 0;
+@@ -1723,7 +1775,7 @@ xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t unicode)
+ 
+     for (index = XR_MIN_KEY_CODE; index < XR_MAX_KEY_CODE; index++)
+     {
+-        if (unicode == self->keymap.keys_shift[index].chr)
++        if (c32 == self->keymap.keys_shift[index].chr)
+         {
+             if (device_flags & KBD_FLAG_UP)
+             {
+@@ -1741,7 +1793,7 @@ xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t unicode)
+ 
+     for (index = XR_MIN_KEY_CODE; index < XR_MAX_KEY_CODE; index++)
+     {
+-        if (unicode == self->keymap.keys_altgr[index].chr)
++        if (c32 == self->keymap.keys_altgr[index].chr)
+         {
+             if (device_flags & KBD_FLAG_UP)
+             {
+@@ -1761,7 +1813,7 @@ xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t unicode)
+ 
+     for (index = XR_MIN_KEY_CODE; index < XR_MAX_KEY_CODE; index++)
+     {
+-        if (unicode == self->keymap.keys_shiftaltgr[index].chr)
++        if (c32 == self->keymap.keys_shiftaltgr[index].chr)
+         {
+             if (device_flags & KBD_FLAG_UP)
+             {
+@@ -1780,6 +1832,17 @@ xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t unicode)
+         }
+     }
+ 
++    // Send the character to chansrv if it's capable of doing something
++    // with it
++    if (self->mm->chan_trans != NULL &&
++            self->client_info->unicode_input_support == UIS_ACTIVE &&
++            self->mm->chan_trans->status == TRANS_STATUS_UP)
++    {
++        xrdp_mm_send_unicode_to_chansrv(self->mm,
++                                        !(device_flags & KBD_FLAG_UP), c32);
++        return 0;
++    }
++
+     return 0;
+ }
+ 

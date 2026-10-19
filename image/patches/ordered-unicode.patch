@@ -1,0 +1,126 @@
+Preserve printable Unicode ordering and paired key routes.
+Local adaptation for xrdp 0.10.6.1 after the Unicode backport.
+
+--- a/xrdp/xrdp_wm.c
++++ b/xrdp/xrdp_wm.c
+@@ -1755,11 +1755,54 @@
+ xrdp_wm_key_unicode(struct xrdp_wm *self, int device_flags, char32_t c16)
+ {
+     int index;
++    int route = 0;
++    int route_shift = 0;
++    unsigned char *route_byte = NULL;
++    int chansrv_ready;
+     char32_t c32 = get_unicode_character(self, device_flags, c16);
+ 
+     if (c32 == 0)
+     {
+         return 0;
++    }
++
++    chansrv_ready = self->mm->chan_trans != NULL &&
++                    self->client_info->unicode_input_support == UIS_ACTIVE &&
++                    self->mm->chan_trans->status == TRANS_STATUS_UP;
++
++    if (c32 >= 0x20 && c32 != 0x7f && c32 <= 0x10ffff)
++    {
++        /* Two bits per Unicode scalar: 0=idle, 1=IBus, 2=keymap.
++         * Retain the route until key-up even if modifiers change meanwhile. */
++        route_byte = &self->unicode_routes[c32 / 4];
++        route_shift = (c32 % 4) * 2;
++        route = (*route_byte >> route_shift) & 3;
++        if (device_flags & KBD_FLAG_UP)
++        {
++            *route_byte &= ~(3 << route_shift);
++            if (route != 2)
++            {
++                if (route == 1 && chansrv_ready)
++                {
++                    xrdp_mm_send_unicode_to_chansrv(self->mm, 0, c32);
++                }
++                return 0;
++            }
++        }
++        else if (route == 1 ||
++                 (route == 0 && chansrv_ready &&
++                  self->keys[0x1d] == 0 && self->keys[XR_RDP_SCAN_ALT] == 0 &&
++                  self->keys[0x5b] == 0 && self->keys[0x5c] == 0))
++        {
++            /* ASCII keymap synthesis can overtake asynchronous CJK commits.
++             * Ordinary printable text must share one ordered IBus stream. */
++            *route_byte = (*route_byte & ~(3 << route_shift)) | (1 << route_shift);
++            if (chansrv_ready)
++            {
++                xrdp_mm_send_unicode_to_chansrv(self->mm, 1, c32);
++            }
++            return 0;
++        }
+     }
+ 
+     // See if we can find the character in the existing keymap,
+@@ -1768,6 +1811,10 @@
+     {
+         if (c32 == self->keymap.keys_noshift[index].chr)
+         {
++            if (route_byte != NULL && !(device_flags & KBD_FLAG_UP))
++            {
++                *route_byte = (*route_byte & ~(3 << route_shift)) | (2 << route_shift);
++            }
+             xrdp_wm_key(self, device_flags, index - XR_MIN_KEY_CODE);
+             return 0;
+         }
+@@ -1777,6 +1824,10 @@
+     {
+         if (c32 == self->keymap.keys_shift[index].chr)
+         {
++            if (route_byte != NULL && !(device_flags & KBD_FLAG_UP))
++            {
++                *route_byte = (*route_byte & ~(3 << route_shift)) | (2 << route_shift);
++            }
+             if (device_flags & KBD_FLAG_UP)
+             {
+                 xrdp_wm_key(self, device_flags, index - XR_MIN_KEY_CODE);
+@@ -1795,6 +1846,10 @@
+     {
+         if (c32 == self->keymap.keys_altgr[index].chr)
+         {
++            if (route_byte != NULL && !(device_flags & KBD_FLAG_UP))
++            {
++                *route_byte = (*route_byte & ~(3 << route_shift)) | (2 << route_shift);
++            }
+             if (device_flags & KBD_FLAG_UP)
+             {
+                 xrdp_wm_key(self, device_flags, index - XR_MIN_KEY_CODE);
+@@ -1815,6 +1870,10 @@
+     {
+         if (c32 == self->keymap.keys_shiftaltgr[index].chr)
+         {
++            if (route_byte != NULL && !(device_flags & KBD_FLAG_UP))
++            {
++                *route_byte = (*route_byte & ~(3 << route_shift)) | (2 << route_shift);
++            }
+             if (device_flags & KBD_FLAG_UP)
+             {
+                 xrdp_wm_key(self, device_flags, index - XR_MIN_KEY_CODE);
+@@ -1838,6 +1897,10 @@
+             self->client_info->unicode_input_support == UIS_ACTIVE &&
+             self->mm->chan_trans->status == TRANS_STATUS_UP)
+     {
++        if (route_byte != NULL && !(device_flags & KBD_FLAG_UP))
++        {
++            *route_byte = (*route_byte & ~(3 << route_shift)) | (1 << route_shift);
++        }
+         xrdp_mm_send_unicode_to_chansrv(self->mm,
+                                         !(device_flags & KBD_FLAG_UP), c32);
+         return 0;
+--- a/xrdp/xrdp_types.h
++++ b/xrdp/xrdp_types.h
+@@ -586,6 +586,8 @@
+ 
+     struct xrdp_region *screen_dirty_region;
+     int last_screen_draw_time;
++    /* Two route bits per Unicode scalar; zeroed with the window manager. */
++    unsigned char unicode_routes[0x110000 / 4];
+ };
+ 
+ /* rdp process */
