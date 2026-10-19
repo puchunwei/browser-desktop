@@ -1,0 +1,3 @@
+# Path prefixes inside image layers that may match privacy patterns.
+# One prefix per line followed by the third-party reason, e.g.
+# usr/share/example/data.txt  Debian package example: upstream sample key
