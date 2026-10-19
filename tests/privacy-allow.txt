@@ -1,3 +1,4 @@
 # Path prefixes inside image layers that may match privacy patterns.
 # One prefix per line followed by the third-party reason, e.g.
 # usr/share/example/data.txt  Debian package example: upstream sample key
+usr/share/mime/packages/freedesktop.org.xml  Debian shared-mime-info: MIME magic text for PGP key files, not a key
