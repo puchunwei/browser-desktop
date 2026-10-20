@@ -25,13 +25,28 @@ jobs:
           python3 -I tests/test-reconnects.py
           bash tests/privacy-scan.test.sh
           bash tests/privacy-scan.sh tree .
+      - name: Pull the pinned base image
+        # Anonymous public.ecr.aws pulls are rate limited; concurrent ci/release runs
+        # on one push made the first build fail within seconds. Retry before building.
+        run: |
+          base="$(sed -n 's/^ARG DEBIAN_IMAGE=//p' image/Dockerfile)"
+          for attempt in 1 2 3 4 5; do
+            docker pull "$base" && exit 0
+            sleep $((attempt * 15))
+          done
+          exit 1
       - name: Build
         run: |
-          docker build -f image/Dockerfile \
+          set -o pipefail
+          # Job logs need a GitHub login; failure annotations stay readable without one.
+          docker build --progress plain -f image/Dockerfile \
             --build-arg IMAGE_VERSION="${{ steps.version.outputs.version }}" \
             --build-arg IMAGE_REVISION="$GITHUB_SHA" \
             --build-arg IMAGE_CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -t browser-desktop:release .
+            -t browser-desktop:release . 2>&1 | tee build.log || {
+            tail -n 9 build.log | sed 's/%/%25/g; s/^/::error title=docker build::/'
+            exit 1
+          }
       - name: Image privacy scan
         run: bash tests/privacy-scan.sh image browser-desktop:release
       - name: Startup checks
