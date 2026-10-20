@@ -97,6 +97,7 @@ COPY image/ibus-session.sh /usr/local/bin/ibus-session.sh
 COPY image/configure-openbox.py image/configure-cursors.py /usr/local/libexec/
 COPY image/supervisord.conf /etc/supervisor/browser.conf
 COPY image/browser-desktop.gschema.override /usr/share/glib-2.0/schemas/90_browser-desktop.gschema.override
+COPY image/gtk-settings.ini /etc/gtk-3.0/settings.ini
 COPY seccomp/chrome.json /usr/share/browser-desktop/chrome-seccomp.json
 COPY LICENSE NOTICE /usr/share/doc/browser-desktop/
 COPY image/patches/ /usr/share/doc/browser-desktop/patches/

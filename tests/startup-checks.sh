@@ -92,6 +92,11 @@ for file in LICENSE NOTICE packages.txt patches/queued-resize.patch; do
 done
 in_c alice test -s /usr/share/browser-desktop/chrome-seccomp.json || fail 'seccomp profile not shipped'
 in_c alice test -s /usr/share/ibus/component/libpinyin.xml || fail 'remote pinyin engine not installed'
+# No taskbar exists, so nothing may iconify a window that can then never be restored.
+in_c alice grep -qx 'gtk-decoration-layout=:maximize,close' /etc/gtk-3.0/settings.ini || fail 'Chrome still offers a minimize button'
+if in_c alice grep -Eq 'action name="(Iconify|ToggleShowDesktop)"|client-menu|<titleLayout>[^<]*I' /etc/xdg/openbox/rc.xml; then
+    fail 'Openbox can still iconify windows'
+fi
 [[ "$(in_c alice cat /etc/timezone)" == Asia/Shanghai ]] || fail 'timezone not applied'
 in_c alice curl -fsS http://127.0.0.1:9222/json/version >/dev/null || fail 'CDP not reachable inside the container'
 "${docker[@]}" restart -t 30 "$prefix-alice" >/dev/null
