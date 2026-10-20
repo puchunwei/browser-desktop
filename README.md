@@ -11,9 +11,31 @@
 
 [English](README.en.md) · [安全说明](SECURITY.md) · [变更记录](CHANGELOG.md)
 
-## 快速开始（Docker Compose）
+## 快速开始
 
-所有配置都在仓库根目录的 [`compose.yaml`](compose.yaml) 一个文件里，不需要 `.env` 或其他配置文件：
+一条命令，不需要先克隆仓库或手动编辑文件：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/puchunwei/browser-desktop/main/install.sh | bash
+```
+
+脚本会下载 `compose.yaml` 和它引用的 `seccomp/chrome.json`，生成一个随机密码并启动容器，
+最后打印用户名、密码和端口。用 RDP 客户端（Windows App / Microsoft Remote Desktop / Jump Desktop / FreeRDP 等）
+连接打印出来的端口即可。
+
+想自己指定用户名和密码，或者装到别的目录：
+
+```bash
+DESKTOP_USER=alice RDP_PASSWORD='自己的密码，至少20个字符不含冒号' BROWSER_DESKTOP_DIR=my-browser \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/puchunwei/browser-desktop/main/install.sh)"
+```
+
+脚本只下载和运行这两个公开文件，不会收集任何信息；内容可以在执行前自己看一眼：
+[`install.sh`](install.sh)。
+
+### 克隆仓库手动安装
+
+想先看一眼配置，或者要自己改 `compose.yaml` 的，克隆仓库后所有配置都在根目录这一个文件里：
 
 ```bash
 git clone https://github.com/puchunwei/browser-desktop.git && cd browser-desktop
@@ -21,10 +43,6 @@ vi compose.yaml        # 改 DESKTOP_USER 与 RDP_PASSWORD（至少 20 个字符
 docker compose up -d
 docker compose logs browser-desktop | grep 'RDP TLS certificate SHA256'   # 证书指纹，首次连接时核对
 ```
-
-用 RDP 客户端（Windows App / Microsoft Remote Desktop、Jump Desktop、FreeRDP 等）连接 `服务器地址:3389`，
-用户名为 `DESKTOP_USER`，密码为 `RDP_PASSWORD`。`RDP_PASSWORD` 留空时首次启动自动生成随机密码，
-用 `docker exec browser-desktop cat /data/rdp/password` 读取。改完 `compose.yaml` 再执行 `docker compose up -d` 即生效。
 
 不想克隆仓库时，下载 `compose.yaml` 和它引用的 `seccomp/chrome.json` 两个文件即可：
 

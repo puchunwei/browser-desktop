@@ -13,7 +13,17 @@ the same host can drive the same browser through the Chrome DevTools Protocol (C
 
 ## Quick start
 
-Everything is configured in the single root [`compose.yaml`](compose.yaml); no `.env` or other files are needed:
+```bash
+curl -fsSL https://raw.githubusercontent.com/puchunwei/browser-desktop/main/install.sh | bash
+```
+
+Downloads `compose.yaml` and `seccomp/chrome.json`, generates a random password, starts the
+container, and prints the user name, password and port. Override with
+`DESKTOP_USER=alice RDP_PASSWORD='...' bash -c "$(curl -fsSL .../install.sh)"`.
+The script only fetches and runs those two public files; read [`install.sh`](install.sh) first if you want.
+
+To inspect or edit the configuration first, clone the repo instead; everything is in the single
+root [`compose.yaml`](compose.yaml):
 
 ```bash
 git clone https://github.com/puchunwei/browser-desktop.git && cd browser-desktop
