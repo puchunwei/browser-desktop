@@ -17,8 +17,9 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           chrome="$(sed -n 's/^ARG CHROME_VERSION=\(.*\)-1$/\1/p' image/Dockerfile)"
-          [[ -n "$chrome" && "$version" =~ ^${chrome//./\\.}-[0-9]{8}$ ]] \
-            || { echo "tag $GITHUB_REF_NAME must be v$chrome-YYYYMMDD" >&2; exit 1; }
+          # A same-day fix takes a revision suffix; published tags are never overwritten.
+          [[ -n "$chrome" && "$version" =~ ^${chrome//./\\.}-[0-9]{8}(\.[0-9]+)?$ ]] \
+            || { echo "tag $GITHUB_REF_NAME must be v$chrome-YYYYMMDD or v$chrome-YYYYMMDD.N" >&2; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Unit tests and repository privacy scan
         run: |
