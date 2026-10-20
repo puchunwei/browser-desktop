@@ -19,17 +19,20 @@ jobs:
       - name: Repository privacy scan
         run: bash tests/privacy-scan.sh tree .
       - name: Pull the pinned base image
-        # Anonymous public.ecr.aws pulls are rate limited; concurrent ci/release runs
-        # on one push made the first build fail within seconds. Retry before building.
+        # GitHub runners fail to pull from public.ecr.aws; Docker Hub serves the same
+        # official image under the same digest, so the bytes stay identical.
         run: |
           base="$(sed -n 's/^ARG DEBIAN_IMAGE=//p' image/Dockerfile)"
-          for attempt in 1 2 3 4 5; do
-            docker pull "$base" && exit 0
+          hub="docker.io/library/${base#public.ecr.aws/docker/library/}"
+          [[ "$hub" == docker.io/library/debian:*@sha256:* ]] || { echo "unexpected base $base" >&2; exit 1; }
+          echo "DEBIAN_IMAGE=$hub" >> "$GITHUB_ENV"
+          for attempt in 1 2 3; do
+            docker pull "$hub" && exit 0
             sleep $((attempt * 15))
           done
           exit 1
       - name: Build
-        run: docker build -f image/Dockerfile --build-arg IMAGE_REVISION="$GITHUB_SHA" -t browser-desktop:ci .
+        run: docker build -f image/Dockerfile --build-arg DEBIAN_IMAGE="$DEBIAN_IMAGE" --build-arg IMAGE_REVISION="$GITHUB_SHA" -t browser-desktop:ci .
       - name: Image privacy scan
         run: bash tests/privacy-scan.sh image browser-desktop:ci
       - name: Startup checks
