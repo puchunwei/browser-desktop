@@ -6,6 +6,8 @@ browser_executable=/usr/bin/google-chrome-stable
 # publish-session runs inside the xrdp session, which does not inherit the container
 # environment; every value used there must have a default or come from the session.
 export DESKTOP_USER="${DESKTOP_USER:-browser}"
+# Remember whether the deployer chose a password file before applying the default.
+password_file_set="${RDP_PASSWORD_FILE:+1}"
 export RDP_PASSWORD_FILE="${RDP_PASSWORD_FILE:-${RDP_STATE_DIR:-/data/rdp}/password}"
 
 fail() { echo "browser-desktop: $*" >&2; exit 1; }
@@ -124,13 +126,30 @@ fi
 ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
 echo "$TZ" > /etc/timezone
 
-# Generate a password only at the default location; an explicit file (e.g. a Docker secret) must exist.
-if [[ ! -e "$RDP_PASSWORD_FILE" && "$RDP_PASSWORD_FILE" == "$RDP_STATE_DIR/password" ]]; then
+# RDP_PASSWORD and RDP_PASSWORD_FILE follow the usual VAR / VAR_FILE convention: set at most one.
+# A configured RDP_PASSWORD is stored privately on every start so a changed value takes effect;
+# without either, a password is generated once at the default location.
+check_password() {
+    python3 -I - "$1" <<'PY'
+import pathlib, sys
+password = pathlib.Path(sys.argv[1]).read_text().strip()
+if len(password) < 20 or any(c in password for c in ':\r\n'):
+    raise SystemExit('RDP password must be at least 20 characters without ":" or newlines')
+PY
+}
+if [[ -n "${RDP_PASSWORD:-}" ]]; then
+    [[ -z "$password_file_set" ]] || fail 'set either RDP_PASSWORD or RDP_PASSWORD_FILE, not both'
+    ( umask 077; printf '%s\n' "$RDP_PASSWORD" > "$RDP_PASSWORD_FILE.new" )
+    check_password "$RDP_PASSWORD_FILE.new" || { rm -f "$RDP_PASSWORD_FILE.new"; exit 1; }
+    mv -f "$RDP_PASSWORD_FILE.new" "$RDP_PASSWORD_FILE"
+elif [[ ! -e "$RDP_PASSWORD_FILE" && "$RDP_PASSWORD_FILE" == "$RDP_STATE_DIR/password" ]]; then
     ( umask 077; python3 -I -c 'import secrets; print(secrets.token_urlsafe(24))' > "$RDP_PASSWORD_FILE.new" )
     mv -f "$RDP_PASSWORD_FILE.new" "$RDP_PASSWORD_FILE"
     echo "browser-desktop: generated an RDP password; read it with: docker exec <container> cat $RDP_PASSWORD_FILE"
 fi
 [[ -s "$RDP_PASSWORD_FILE" ]] || fail "missing RDP password file $RDP_PASSWORD_FILE"
+# Supervised programs, including Chrome, must not inherit the password.
+unset RDP_PASSWORD
 chmod 0700 "$RDP_STATE_DIR"
 python3 -I - "$RDP_PASSWORD_FILE" <<'PY' | chpasswd
 import os, pathlib, sys

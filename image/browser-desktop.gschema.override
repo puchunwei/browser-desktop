@@ -1,0 +1,7 @@
+# Remote pinyin for RDP clients that send physical-key scancodes (for example Jump Desktop).
+# It starts in English mode; Shift toggles Chinese. Phones keep using RDP Unicode input.
+[com.github.libpinyin.ibus-libpinyin.libpinyin]
+init-chinese=false
+
+[org.freedesktop.ibus.general]
+preload-engines=['libpinyin']

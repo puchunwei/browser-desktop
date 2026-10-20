@@ -75,6 +75,22 @@ existing shared X server through XIM instead of the session's D-Bus. Chansrv and
 address using that user's display-specific address file even though chansrv
 was started before the window manager's session D-Bus.
 
+## Remote pinyin and lazy Unicode engine
+
+`lazy-unicode-engine.patch` is a local change applied after the four patches above
+(SHA-256 `40983a9895eed6db63b6fb3ae0529f9f084f1ccd191ef42eea671a472c34b20f`, not upstream). On reconnect the Unicode backport
+switched the IBus global engine to `XrdpIme` for the whole viewer session. `XrdpIme`
+passes every key through, so a viewer that sends physical-key scancodes (Jump Desktop
+with a Mac or PC keyboard) could not use a remote input method. Reconnects now defer
+the switch to the first Unicode character, as the first connection already did; the
+previous engine is still recorded then and restored on viewer disconnect.
+
+The image installs `ibus-libpinyin` and selects it as the session engine. Its gschema
+override starts pinyin in English mode, so Shift switches Chinese on and off, and the
+IBus panel draws the candidate window. Phone keyboards keep using RDP Unicode input.
+`tests/rdp-client/pinyin-input.py` types `nihao` with Unicode input disabled and checks
+that the first candidate is committed after a preceding Unicode connection.
+
 ## Isolated input verification
 
 `ordered-unicode.patch` is a local follow-up: normal printable Unicode uses

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verifies a running browser-desktop container end to end:
-# healthy, CDP up, Chrome sandbox, landscape/portrait pixels, transparent cursors and
-# Unicode input, wrong-password rejection, session reuse, and the browser surviving
+# healthy, CDP up, Chrome sandbox, landscape/portrait pixels, transparent cursors,
+# Unicode input, remote pinyin from scancode keys, wrong-password rejection, session reuse, and the browser surviving
 # viewer disconnects. VERIFY_RESTART=1 (disposable instances only) also restarts the
 # container and requires three synthetic tabs to be restored.
 # Usage: verify.sh <container> <rdp-host> <rdp-port> <cdp-port> <password-file>
@@ -33,6 +33,12 @@ cleanup() {
     if [[ -f "$evidence/unicode-target.json" ]]; then
         if ! node "$HERE/unicode-target.mjs" close "$cdp_port" "$evidence/unicode-target.json"; then
             echo "FAIL: could not close the synthetic Unicode tab" >&2
+            result=1
+        fi
+    fi
+    if [[ -f "$evidence/pinyin-target.json" ]]; then
+        if ! node "$HERE/unicode-target.mjs" close "$cdp_port" "$evidence/pinyin-target.json"; then
+            echo "FAIL: could not close the synthetic pinyin tab" >&2
             result=1
         fi
     fi
@@ -122,6 +128,20 @@ if [[ "${VERIFY_SHORTCUTS:-0}" == 1 ]]; then
 fi
 node "$HERE/unicode-target.mjs" check "$cdp_port" "$evidence/unicode-target.json" \
     > "$evidence/unicode-value.json" || fail "RDP Unicode text did not reach the input"
+# A scancode-only viewer (Jump Desktop with a physical keyboard) types Chinese through
+# the remote pinyin engine. This connection follows the Unicode one, so it also proves the
+# Unicode engine handed the session back to pinyin on disconnect.
+node "$HERE/unicode-target.mjs" open "$cdp_port" "$evidence/pinyin-target.json"
+"${docker[@]}" run --rm --init --network host \
+    -e RDP_USER="$desktop_user" \
+    -v "$(readlink -f "$password_file"):/pw:ro" -v "$evidence:/evidence" \
+    browser-desktop-rdp-client:visual \
+    timeout 80 xvfb-run -a -s '-screen 0 1280x800x24' python3 /pinyin-input.py "$rdp_host" "$rdp_port" \
+    > "$evidence/pinyin-client-result.log" 2>&1 || fail "RDP pinyin client failed; see $evidence"
+node "$HERE/unicode-target.mjs" check-composition "$cdp_port" "$evidence/pinyin-target.json" 你好 \
+    > "$evidence/pinyin-value.json" || fail "remote pinyin did not turn scancode keys into Chinese"
+node "$HERE/unicode-target.mjs" close "$cdp_port" "$evidence/pinyin-target.json" || fail 'could not close the synthetic pinyin tab'
+rm "$evidence/pinyin-target.json"
 auth_lines="$(in_box sh -c 'wc -l < /var/log/xrdp-sesman.log')"
 "${docker[@]}" run --rm --init --network host -v "$evidence:/evidence" browser-desktop-rdp-client:visual \
     timeout 15 xvfb-run -a python3 /reject-rdp.py "$rdp_host" "$rdp_port" "$desktop_user" \
@@ -159,4 +179,4 @@ if [[ "${VERIFY_RESTART:-0}" == 1 ]]; then
     node "$HERE/restart-tabs.mjs" check "$cdp_port" "$evidence/restart-tabs.json" \
         || fail 'synthetic tabs were not restored after a container restart'
 fi
-echo "OK: sandbox, landscape/portrait pixels, rotation clicks, transparent cursors, Chinese and wrong-password rejection verified; session reused and browser survived disconnect; evidence $evidence"
+echo "OK: sandbox, landscape/portrait pixels, rotation clicks, transparent cursors, Chinese (Unicode and remote pinyin) and wrong-password rejection verified; session reused and browser survived disconnect; evidence $evidence"

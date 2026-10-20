@@ -1,0 +1,27 @@
+Defer the XrdpIme engine switch on reconnect until Unicode input arrives.
+
+Local change on top of xrdp-0.10.6.1-ibus-unicode.patch (not upstream).
+The first viewer connection already switched lazily, on the first Unicode
+character; a reconnect switched immediately for the whole viewer session.
+Scancode-only clients (for example Jump Desktop with a physical keyboard)
+then reached XrdpIme, which passes every key through, so a remote pinyin
+engine could never be used. Reconnects now behave like the first connection.
+The previous engine is still recorded on the first Unicode character and
+restored on viewer disconnect.
+
+--- a/sesman/chansrv/input_ibus.c
++++ b/sesman/chansrv/input_ibus.c
+@@ -376,8 +376,11 @@
+ 
+     if (bus)
+     {
+-        /* Already initialized, just re-enable it */
+-        return xrdp_input_enable();
++        /* Already initialized. Like the first connection, defer switching the
++         * global engine to XrdpIme until the first Unicode character arrives,
++         * so a viewer that only sends scancodes keeps the user's own engine
++         * (for example a remote pinyin engine). */
++        return 0;
+     }
+ 
+     /* Wait because the ibus daemon may not be ready on first login */

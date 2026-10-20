@@ -1,8 +1,8 @@
 // Disposable fixture: CDP creates and reads a page; only RDP supplies text.
 import { readFileSync, writeFileSync } from 'node:fs';
 const [mode, port, file, expected = '中A1文B2输入C3测试D4'] = process.argv.slice(2);
-if (!['open', 'read', 'check', 'close'].includes(mode) || !port || !file) {
-    throw new Error('usage: unicode-target.mjs open|read|check|close <synthetic-cdp-port> <state-file> [expected]');
+if (!['open', 'read', 'check', 'check-composition', 'close'].includes(mode) || !port || !file) {
+    throw new Error('usage: unicode-target.mjs open|read|check|check-composition|close <synthetic-cdp-port> <state-file> [expected]');
 }
 const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
 const ws = new WebSocket(webSocketDebuggerUrl);
@@ -51,6 +51,15 @@ try {
             console.log(JSON.stringify(value));
             if (mode === 'check' && (value.value !== expected || !value.events.length || value.events.some(event => !event.trusted))) {
                 throw new Error(`RDP Unicode input mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(value.value)}`);
+            }
+            // A remote input method commits through composition, not RDP Unicode insertText events:
+            // require trusted composition ending in the expected text and no raw text insertion.
+            if (mode === 'check-composition') {
+                const composed = value.events.filter(event => event.inputType === 'insertCompositionText');
+                if (value.value !== expected || !composed.length || value.events.some(event => !event.trusted) ||
+                        composed.at(-1).data !== expected || value.events.some(event => event.inputType === 'insertText')) {
+                    throw new Error(`remote input method mismatch: expected ${JSON.stringify(expected)}, received ${JSON.stringify(value.value)}`);
+                }
             }
             const inserted = value.events.filter(event => event.inputType === 'insertText').map(event => event.data ?? '').join('');
             if (mode === 'check' && inserted !== expected.repeat(process.env.VERIFY_SHORTCUTS === '1' ? 2 : 1)) {

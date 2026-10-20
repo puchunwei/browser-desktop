@@ -1,7 +1,7 @@
 # browser-desktop
 
 常驻的 Google Chrome 桌面，通过 RDP 远程使用。断开连接后浏览器和标签页继续运行，
-再次连接回到同一画面；屏幕分辨率跟随客户端，支持手机横竖屏切换和手机键盘中文输入。
+再次连接回到同一画面；屏幕分辨率跟随客户端，支持手机横竖屏切换，手机与电脑键盘都能输入中文。
 同机程序可以通过 Chrome DevTools Protocol（CDP）操作同一个浏览器。
 
 - 镜像：`ghcr.io/puchunwei/browser-desktop`，仅 linux/amd64（仅在 Linux AMD64 上验证）。
@@ -13,39 +13,45 @@
 
 ## 快速开始（Docker Compose）
 
+所有配置都在仓库根目录的 [`compose.yaml`](compose.yaml) 一个文件里，不需要 `.env` 或其他配置文件：
+
 ```bash
-mkdir browser-desktop && cd browser-desktop
-curl -fsSLO https://raw.githubusercontent.com/puchunwei/browser-desktop/main/examples/compose.yml
-docker run --rm --entrypoint cat ghcr.io/puchunwei/browser-desktop:latest \
-  /usr/share/browser-desktop/chrome-seccomp.json > chrome-seccomp.json
+git clone https://github.com/puchunwei/browser-desktop.git && cd browser-desktop
+vi compose.yaml        # 改 DESKTOP_USER 与 RDP_PASSWORD（至少 20 个字符，不含冒号）
 docker compose up -d
 docker compose logs browser-desktop | grep 'RDP TLS certificate SHA256'   # 证书指纹，首次连接时核对
-docker exec browser-desktop cat /data/rdp/password                         # RDP 密码
 ```
 
 用 RDP 客户端（Windows App / Microsoft Remote Desktop、Jump Desktop、FreeRDP 等）连接 `服务器地址:3389`，
-用户名为 `DESKTOP_USER`（默认 `browser`），密码为上面读出的内容。
+用户名为 `DESKTOP_USER`，密码为 `RDP_PASSWORD`。`RDP_PASSWORD` 留空时首次启动自动生成随机密码，
+用 `docker exec browser-desktop cat /data/rdp/password` 读取。改完 `compose.yaml` 再执行 `docker compose up -d` 即生效。
+
+不想克隆仓库时，下载 `compose.yaml` 和它引用的 `seccomp/chrome.json` 两个文件即可：
+
+```bash
+mkdir -p browser-desktop/seccomp && cd browser-desktop
+curl -fsSLO https://raw.githubusercontent.com/puchunwei/browser-desktop/main/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/puchunwei/browser-desktop/main/seccomp/chrome.json -o seccomp/chrome.json
+```
+
+`compose.yaml` 里标明必需的 `shm_size`、`tmpfs` 不要删除，缺少时容器拒绝启动；
+`security_opt` 让 Chrome 启用自身沙箱，缺少时以 `--no-sandbox` 运行并在日志中警告；
+`stop_grace_period: 30s` 让 Chrome 停止前写盘，Docker 默认 10 秒可能丢失 Cookie。
 
 ## 等价的 docker run
+
+在仓库目录中执行（`seccomp/chrome.json` 也可以从镜像导出：
+`docker run --rm --entrypoint cat ghcr.io/puchunwei/browser-desktop:latest /usr/share/browser-desktop/chrome-seccomp.json > chrome.json`）：
 
 ```bash
 docker run -d --name browser-desktop \
   --shm-size 2g --stop-timeout 30 \
   --tmpfs /run/xrdp:rw,nosuid,nodev,size=16m,mode=0755 \
-  --security-opt seccomp="$PWD/chrome-seccomp.json" \
+  --security-opt seccomp="$PWD/seccomp/chrome.json" \
+  -e DESKTOP_USER=browser -e RDP_PASSWORD='至少20个字符的密码' \
   -p 3389:3389 -v browser-desktop-data:/data \
   --restart unless-stopped ghcr.io/puchunwei/browser-desktop:latest
 ```
-
-以下三项必须保留，缺少时容器会拒绝启动或丢数据：
-
-| 参数 | 原因 |
-| --- | --- |
-| `--tmpfs /run/xrdp` | 会话套接字需要 tmpfs 才能获得正确的属组，否则登录后 `Error connecting to Xorg` |
-| `--shm-size 2g` | Chrome 需要足够的共享内存，小于 1 GiB 拒绝启动 |
-| `--stop-timeout 30` | 停止时先让 Chrome 正常退出并写盘；Docker 默认 10 秒可能丢失 Cookie |
-
-`--security-opt seccomp=…` 让 Chrome 启用自身沙箱。缺少时容器仍会启动，但以 `--no-sandbox` 运行并在日志中警告。
 
 ## 配置
 
@@ -53,7 +59,8 @@ docker run -d --name browser-desktop \
 | --- | --- | --- |
 | `DESKTOP_USER` | `browser` | RDP 登录名，也是运行 Chrome 的账号 |
 | `RDP_PORT` / `RDP_BIND_ADDRESS` | `3389` / `0.0.0.0` | 容器内 RDP 监听 |
-| `RDP_PASSWORD_FILE` | `/data/rdp/password` | 默认位置缺失时首次启动自动生成；指定其他路径（如 Docker secret）时文件必须存在 |
+| `RDP_PASSWORD` | 空 | RDP 密码，至少 20 个字符且不含冒号；每次启动写入 `/data/rdp/password`，改值后重建容器即生效。为空时见下一行 |
+| `RDP_PASSWORD_FILE` | `/data/rdp/password` | 从文件读取密码（如 Docker secret），与 `RDP_PASSWORD` 二选一；都不设时首次启动在默认位置生成随机密码 |
 | `CDP_PORT` / `CDP_BIND_ADDRESS` | `9222` / `127.0.0.1` | CDP 转发，默认只在容器内可用 |
 | `BROWSER_PROXY_SERVER` / `BROWSER_PROXY_BYPASS` | 空 | Chrome 启动代理与直连列表 |
 | `TZ` / `LANGUAGE` | `Asia/Shanghai` / `zh_CN` | 时区与 Chrome 界面语言 |
@@ -98,6 +105,8 @@ docker compose start
 - iPhone 上的 Jump Desktop：先关闭 Retina，使用与手机相近的分辨率（竖屏可从 `640×1386` 开始），启用动态分辨率。
 - 浏览器窗口被关闭后会自动重新打开并恢复标签页。
 - 手机键盘中文通过 RDP Unicode 输入直接送达，不依赖剪贴板。
+- 电脑键盘（Jump Desktop、Windows 远程桌面等发送物理按键的客户端）使用镜像内置的拼音输入法：
+  默认英文，按一下 Shift 切换中文，空格或数字键选词，再按 Shift 回到英文。本机输入法对远程桌面不起作用。
 
 ## 排障
 
@@ -109,7 +118,9 @@ docker compose logs --tail 100 browser-desktop
 | --- | --- |
 | `/run/xrdp must be a tmpfs` | 加 `--tmpfs /run/xrdp:rw,nosuid,nodev,size=16m,mode=0755` |
 | `/dev/shm must be at least 1 GiB` | 加 `--shm-size 2g` |
-| `Chrome sandbox unavailable` | 加 `--security-opt seccomp=chrome-seccomp.json` |
+| `Chrome sandbox unavailable` | 保留 `compose.yaml` 的 `security_opt`，或加 `--security-opt seccomp=seccomp/chrome.json` |
 | `refusing to downgrade` | 资料由更新的 Chrome 写过，换用不低于该版本的镜像 |
 | `missing RDP password file` | 指定的 `RDP_PASSWORD_FILE` 不存在 |
+| `RDP password must be at least 20 characters` | 加长 `RDP_PASSWORD` 或密码文件内容，且不含冒号 |
+| `set either RDP_PASSWORD or RDP_PASSWORD_FILE` | 两者只能设置一个 |
 | `must be writable by the desktop user` | 绑定挂载的宿主目录需允许 uid 1000 进入并写入（含各级父目录） |

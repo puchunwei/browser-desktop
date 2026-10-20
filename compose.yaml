@@ -1,0 +1,40 @@
+# browser-desktop: persistent Google Chrome desktop over RDP.
+#
+#   git clone https://github.com/puchunwei/browser-desktop.git && cd browser-desktop
+#   # edit DESKTOP_USER / RDP_PASSWORD below, then:
+#   docker compose up -d
+#
+# Everything is configured in this file. Using the image means accepting the
+# Google Chrome Terms of Service: https://www.google.com/chrome/terms/
+services:
+  browser-desktop:
+    image: ghcr.io/puchunwei/browser-desktop:latest
+    container_name: browser-desktop
+    restart: unless-stopped
+    ports:
+      - "3389:3389"                 # RDP; restrict the source with a firewall when public
+      # CDP is unauthenticated full browser control. To use it from this host only,
+      # uncomment the next line and set CDP_BIND_ADDRESS to "0.0.0.0" below.
+      # - "127.0.0.1:9222:9222"
+    environment:
+      DESKTOP_USER: "browser"       # RDP user name
+      # At least 20 characters, no ":". Leave empty to generate one on first start:
+      #   docker exec browser-desktop cat /data/rdp/password
+      RDP_PASSWORD: ""
+      TZ: "Asia/Shanghai"
+      LANGUAGE: "zh_CN"             # Chrome UI language
+      # CDP_BIND_ADDRESS: "0.0.0.0"
+    volumes:
+      - browser-desktop-data:/data  # profile, downloads, RDP password and TLS identity
+    # Required: the container refuses to start without these two.
+    shm_size: "2gb"
+    tmpfs:
+      - /run/xrdp:rw,nosuid,nodev,size=16m,mode=0755
+    # Lets Chrome enable its own sandbox (see seccomp/README.md); without it Chrome runs
+    # with --no-sandbox and the log warns.
+    security_opt:
+      - seccomp=./seccomp/chrome.json
+    # Gives Chrome time to flush cookies on stop.
+    stop_grace_period: 30s
+volumes:
+  browser-desktop-data:

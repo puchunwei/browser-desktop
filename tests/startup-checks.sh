@@ -19,10 +19,22 @@ base=(--tmpfs /run/xrdp:rw,nosuid,nodev,size=16m,mode=0755 --shm-size 2g)
 in_c() { "${docker[@]}" exec "$prefix-$1" "${@:2}"; }
 
 expect_refusal() {
-    local name=$1 message=$2 output; shift 2
-    if output="$(timeout 120 "${docker[@]}" run --rm --name "$prefix-$name" "$@" "$image" 2>&1)"; then
-        fail "$name: container exited successfully although it should refuse"
-    fi
+    local name=$1 message=$2 output status; shift 2
+    # Run detached and poll: timeout cannot stop a long-running "sudo docker" client, because sudo
+    # does not relay signals from its own process group to the root-owned docker process.
+    "${docker[@]}" run -d --name "$prefix-$name" "$@" "$image" >/dev/null
+    status=timeout
+    for _ in $(seq 1 60); do
+        if [[ "$("${docker[@]}" inspect -f '{{.State.Running}}' "$prefix-$name")" == false ]]; then
+            status="$("${docker[@]}" inspect -f '{{.State.ExitCode}}' "$prefix-$name")"
+            break
+        fi
+        sleep 2
+    done
+    output="$("${docker[@]}" logs "$prefix-$name" 2>&1)"
+    "${docker[@]}" rm -f "$prefix-$name" >/dev/null
+    [[ "$status" != timeout ]] || fail "$name: still running after 120 s although it should refuse"
+    [[ "$status" != 0 ]] || fail "$name: container exited successfully although it should refuse"
     grep -qF -- "$message" <<<"$output" || { echo "$output" >&2; fail "$name: missing message: $message"; }
     echo "OK: $name refused"
 }
@@ -46,6 +58,9 @@ expect_refusal root-user 'DESKTOP_USER must match' "${base[@]}" -e DESKTOP_USER=
 expect_refusal system-user 'is a reserved system account' "${base[@]}" -e DESKTOP_USER=xrdp
 expect_refusal missing-secret 'missing RDP password file /run/secrets/rdp' "${base[@]}" -e RDP_PASSWORD_FILE=/run/secrets/rdp
 expect_refusal bad-tz 'unknown TZ' "${base[@]}" -e TZ=Mars/Base
+expect_refusal short-password 'RDP password must be at least 20 characters' "${base[@]}" -e RDP_PASSWORD=too-short
+expect_refusal both-passwords 'set either RDP_PASSWORD or RDP_PASSWORD_FILE' "${base[@]}" \
+    -e RDP_PASSWORD=configured-password-0123456789 -e RDP_PASSWORD_FILE=/run/secrets/rdp
 "${docker[@]}" volume create "$prefix-newer" >/dev/null
 "${docker[@]}" run --rm -v "$prefix-newer:/data" --entrypoint sh "$image" \
     -c 'mkdir -p /data/profile && echo 999.0.0.0 > "/data/profile/Last Version"'
@@ -76,6 +91,7 @@ for file in LICENSE NOTICE packages.txt patches/queued-resize.patch; do
     in_c alice test -s "/usr/share/doc/browser-desktop/$file" || fail "missing /usr/share/doc/browser-desktop/$file"
 done
 in_c alice test -s /usr/share/browser-desktop/chrome-seccomp.json || fail 'seccomp profile not shipped'
+in_c alice test -s /usr/share/ibus/component/libpinyin.xml || fail 'remote pinyin engine not installed'
 [[ "$(in_c alice cat /etc/timezone)" == Asia/Shanghai ]] || fail 'timezone not applied'
 in_c alice curl -fsS http://127.0.0.1:9222/json/version >/dev/null || fail 'CDP not reachable inside the container'
 "${docker[@]}" restart -t 30 "$prefix-alice" >/dev/null
@@ -83,6 +99,22 @@ wait_healthy alice
 [[ "$(in_c alice cat /data/rdp/password)" == "$password" ]] || fail 'password changed across restart'
 [[ "$(in_c alice id -nu 1000)" == alice ]] || fail 'account changed across restart'
 echo 'OK: first start, restart, generated secrets and image contents'
+
+# A configured password replaces the stored one on every start and never reaches logs or children.
+configured='configured-password-0123456789'
+"${docker[@]}" run -d --name "$prefix-configured" "${base[@]}" --stop-timeout 30 \
+    -e DESKTOP_USER=carol -e RDP_PASSWORD="$configured" "$image" >/dev/null
+wait_healthy configured
+[[ "$(in_c configured cat /data/rdp/password)" == "$configured" ]] || fail 'RDP_PASSWORD was not applied'
+[[ "$(in_c configured stat -c '%a %U' /data/rdp/password)" == '600 root' ]] || fail 'configured password file is not private'
+logs="$("${docker[@]}" logs "$prefix-configured" 2>&1)"
+if grep -qF -- "$configured" <<<"$logs"; then fail 'configured password appeared in logs'; fi
+if grep -q 'generated an RDP password' <<<"$logs"; then fail 'a password was generated although RDP_PASSWORD was set'; fi
+chrome_pid="$(in_c configured pgrep -o -u carol -x chrome)"
+if in_c configured sh -c "tr '\\0' '\\n' < /proc/$chrome_pid/environ" | grep -q '^RDP_PASSWORD='; then
+    fail 'RDP_PASSWORD leaked into the Chrome environment'
+fi
+echo 'OK: configured RDP password applied privately'
 
 # Repository seccomp profile plus a wildcard CDP listener.
 "${docker[@]}" run -d --name "$prefix-sandbox" "${base[@]}" --security-opt "seccomp=$REPO/seccomp/chrome.json" \

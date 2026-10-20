@@ -12,11 +12,17 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     exec /usr/bin/dbus-run-session -- "$0" "$@"
 fi
 
-/usr/bin/ibus-daemon --daemonize --xim --panel=disable --config=disable
-# Ensure an ordinary engine exists before the first RDP client connects.
-# The xrdp Unicode engine records this engine and restores it on disconnect.
+# The default panel draws the pinyin candidate window. ibus-libpinyin exits unless the
+# IBus config component (ibus-dconf) is running; its defaults come from the image's gschema
+# override (pinyin starts in English mode, Shift toggles Chinese).
+/usr/bin/ibus-daemon --daemonize --xim
+# Select the pinyin engine before the first RDP client connects. Scancode viewers
+# (for example Jump Desktop) type through it; the xrdp Unicode engine takes over
+# only when a viewer sends Unicode characters, and restores this engine on disconnect.
+# "ibus engine libpinyin" reports failure even when the switch succeeds, so check the
+# resulting engine instead of the command's exit status.
 attempt=0
-until /usr/bin/ibus engine xkb:us::eng >/dev/null 2>&1 \
+until { /usr/bin/ibus engine libpinyin >/dev/null 2>&1; [ "$(/usr/bin/ibus engine 2>/dev/null)" = libpinyin ]; } \
     && /usr/bin/xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server=ibus'; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge 50 ]; then

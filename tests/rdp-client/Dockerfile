@@ -11,3 +11,4 @@ COPY cursor-probe.py /cursor_probe.py
 COPY unicode-input.py /unicode-input.py
 COPY rotation-client.py /rotation-client.py
 COPY reject-rdp.py /reject-rdp.py
+COPY pinyin-input.py /pinyin-input.py
