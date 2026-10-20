@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 155.0.8059.84-20261020
 
 - 新增 `RDP_PASSWORD`：可在 Compose 中直接设置 RDP 密码，与 `RDP_PASSWORD_FILE` 二选一。
   密码不进日志，也不传给浏览器进程。
