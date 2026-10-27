@@ -4,6 +4,7 @@ set -euo pipefail
 umask 077
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(dirname "$HERE")
+source "$HERE/disposable-cleanup.sh"
 image=${1:?image reference}
 evidence=${2:?private evidence directory}
 read -r -a docker <<< "${DOCKER:-docker}"
@@ -19,20 +20,8 @@ cleanup() {
     result=$?
     trap - EXIT
     "${docker[@]}" logs "$client" > "$evidence/client.log" 2>&1 || true
-    "${docker[@]}" logs "$name" > "$evidence/server.log" 2>&1 || true
     "${docker[@]}" rm -f "$client" >/dev/null 2>&1 || true
-    if [[ $("${docker[@]}" inspect -f '{{.State.Running}}' "$name" 2>/dev/null) == true ]]; then
-        mkdir -p "$evidence/xorg-logs"
-        # docker cp cannot read this runtime tmpfs on every Docker backend.
-        if ! "${docker[@]}" exec "$name" tar -C /run/xrdp/test-logs -cf - . |
-                tar --no-same-owner -xf - -C "$evidence/xorg-logs"; then
-            echo 'FAIL: could not preserve disposable Xorg logs' >&2
-            result=1
-        fi
-    fi
-    "${docker[@]}" stop -t 30 "$name" >/dev/null 2>&1 || true
-    "${docker[@]}" rm -f "$name" >/dev/null 2>&1 || true
-    rm -f "$evidence/password"
+    cleanup_disposable_server "$result" "$name" "$evidence" || result=$?
     exit "$result"
 }
 trap cleanup EXIT

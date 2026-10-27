@@ -436,6 +436,10 @@ try:
         reconnect('phone-landscape', (1386,640), 100)
         preset(150)
         check('phone-larger', (1386,640), 150, 'manual')
+        # A new client hint must not inherit another client's override. Omitting
+        # scale options still sends FreeRDP's valid default 100% metadata.
+        connect('unknown-client', (1280,960), None, 'test-unknown')
+        check('unknown-client', (1280,960), 100, 'negotiated', True)
         connect('phone-remembered', (1386,640), 100, 'test-phone')
         check('phone-remembered', (1386,640), 150, 'manual')
         pointer_preset('phone-menu-150','auto')
@@ -452,10 +456,6 @@ try:
         reconnect('phone-native-portrait', (1170,2532), 300)
         command('recover')
         check('controller-recovered', (1170,2532), 300)
-        # A new client hint must not inherit another client's override. Omitting
-        # scale options still sends FreeRDP's valid default 100% metadata.
-        connect('unknown-client', (1280,960), None, 'test-unknown')
-        check('unknown-client', (1280,960), 100, 'negotiated', True)
         connect('mac-return', (3008,1692), 100, 'test-mac')
         check('mac-return', (3008,1692), 100, 'negotiated')
         scale_menu('mac-return-100')

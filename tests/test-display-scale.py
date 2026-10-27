@@ -1,5 +1,7 @@
 """Behavioral checks with disposable preferences; never open an owner profile."""
+import contextlib
 import ctypes
+import io
 import importlib.util
 import json
 import os
@@ -170,7 +172,8 @@ class DensityTests(unittest.TestCase):
         menu = self.module.OpenboxMenu(template, destination)
         daemon = self.module.XSettings(self.root / 'xsettings.conf', menu)
         with patch.object(self.module.subprocess, 'run', side_effect=notify), \
-                patch.object(self.module.time, 'monotonic', return_value=100) as clock:
+                patch.object(self.module.time, 'monotonic', return_value=100) as clock, \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
             self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', daemon.apply, self.worker_lookup)
             self.event(scale=200)
             self.assertEqual(json.loads((self.root / 'state').read_text())['pid'], 42)
@@ -189,6 +192,9 @@ class DensityTests(unittest.TestCase):
             self.assertIn('<size>18</size>', notified.read_text())
             self.assertEqual(self.policy.status()['scale'], 200)
             self.assertEqual(outcomes, [])
+        self.assertEqual(diagnostics.getvalue(),
+                         "display-scale: menu notification pending retry\n"
+                         "display-scale: starting XSettings service\n")
 
     def test_menu_nonzero_notification_recovers_after_controller_restart(self):
         template, destination = self.root / 'template.xml', self.root / 'rc.xml'
@@ -201,7 +207,8 @@ class DensityTests(unittest.TestCase):
             if outcome == 0:
                 notified.write_bytes(destination.read_bytes())
             return subprocess.CompletedProcess(args[0], outcome)
-        with patch.object(self.module.subprocess, 'run', side_effect=notify):
+        with patch.object(self.module.subprocess, 'run', side_effect=notify), \
+                contextlib.redirect_stderr(io.StringIO()) as diagnostics:
             menu = self.module.OpenboxMenu(template, destination)
             menu.apply(100)
             menu.apply(300)
@@ -212,6 +219,8 @@ class DensityTests(unittest.TestCase):
             self.assertIn('<size>27</size>', notified.read_text())
             recovered.apply(300)
             self.assertEqual(outcomes, [])
+        self.assertEqual(diagnostics.getvalue(),
+                         "display-scale: menu notification pending retry\n")
 
     def test_stale_worker_resize_does_not_change_current_client(self):
         self.event(pid=42)
