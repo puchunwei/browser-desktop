@@ -1,0 +1,18 @@
+--- a/openbox/client.c
++++ b/openbox/client.c
+@@ -3080,6 +3080,15 @@
+         /* This comment is no longer true */
+         /* if this is a user-requested resize, then check against min/max
+            sizes */
++
++        /* A maximized main Chrome window must fit its workarea.
++           Keep application hints intact; clamp only the local constraints. */
++        if (self->type == OB_CLIENT_TYPE_NORMAL && !self->transient && !self->prompt &&
++            self->max_horz && self->max_vert && self->class &&
++            strcmp(self->class, "Google-chrome") == 0) {
++            minw = MIN(minw, *w);
++            minh = MIN(minh, *h);
++        }
+ 
+         /* smaller than min size or bigger than max size? */
+         if (*w > self->max_size.width) *w = self->max_size.width;

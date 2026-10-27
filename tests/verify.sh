@@ -6,7 +6,8 @@
 # container and requires three synthetic tabs to be restored.
 # Usage: verify.sh <container> <rdp-host> <rdp-port> <cdp-port> <password-file>
 # Env: VERIFY_EVIDENCE (required), DOCKER (default "docker"), APT_MIRROR,
-#      VERIFY_SANDBOX (default 1), VERIFY_RESTART (default 0), VERIFY_SHORTCUTS (default 0)
+#      VERIFY_SANDBOX (default 1), VERIFY_RESTART (default 0), VERIFY_SHORTCUTS (default 0),
+#      VERIFY_XORG_TEST_LOGS (default 0; export the disposable density fixture's tmpfs logs)
 set -euo pipefail
 container=$1 rdp_host=$2 rdp_port=$3 cdp_port=$4 password_file=$5
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -171,6 +172,13 @@ node "$HERE/unicode-target.mjs" close "$cdp_port" "$evidence/unicode-target.json
 rm "$evidence/unicode-target.json"
 if [[ "${VERIFY_RESTART:-0}" == 1 ]]; then
     node "$HERE/restart-tabs.mjs" prepare "$cdp_port" "$evidence/restart-tabs.json"
+    if [[ "${VERIFY_XORG_TEST_LOGS:-0}" == 1 ]]; then
+        [[ "${VERIFY_DISPOSABLE:-0}" == 1 ]] || fail 'Xorg test log export requires a disposable fixture'
+        mkdir -p "$evidence/xorg-before-restart"
+        "${docker[@]}" exec "$container" tar -C /run/xrdp/test-logs -cf - . |
+            tar --no-same-owner -xf - -C "$evidence/xorg-before-restart" \
+            || fail 'could not preserve Xorg logs before restart'
+    fi
     "${docker[@]}" restart -t 30 "$container" >/dev/null
     for _ in $(seq 1 60); do
         [[ "$("${docker[@]}" inspect -f '{{.State.Health.Status}}' "$container")" == healthy ]] && break

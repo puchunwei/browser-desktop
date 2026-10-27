@@ -15,6 +15,7 @@ jobs:
       - name: Unit tests
         run: |
           python3 -I tests/test-reconnects.py
+          python3 -I tests/test-display-scale.py
           bash tests/privacy-scan.test.sh
       - name: install.sh
         run: bash tests/install-sh.test.sh
@@ -39,6 +40,8 @@ jobs:
         run: bash tests/privacy-scan.sh image browser-desktop:ci
       - name: Startup checks
         run: REQUIRE_SANDBOX=0 bash tests/startup-checks.sh browser-desktop:ci
+      - name: Negotiated desktop density and persistent Chrome
+        run: DENSITY_VERIFY_LEGACY=1 bash tests/display-scale-image.sh browser-desktop:ci "$RUNNER_TEMP/display-scale"
       - name: Large legacy RDP desktop pixels and input
         run: |
           set -o pipefail

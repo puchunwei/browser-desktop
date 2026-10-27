@@ -11,6 +11,11 @@ This repository and image include or modify the following third-party material:
 - Google Chrome is proprietary software from Google LLC, installed unmodified from
   Google's Linux repository. Use of the image is subject to the Google Chrome Terms
   of Service: https://www.google.com/chrome/terms/
+- Openbox 3.6.1-12 (GPL-2.0-or-later), http://openbox.org/. The main executable
+  is rebuilt from the verified Debian source and patchset with the local
+  maximized Chrome workarea patch in image/patches/. Debian's runtime libraries,
+  configuration and copyright file are retained. Source archives, checksums and
+  build instructions are documented in image/patches/README.md and the image.
 - All other packages come unmodified from Debian. Their licenses are in
   /usr/share/doc/<package>/copyright inside the image; exact versions are listed in
   /usr/share/doc/browser-desktop/packages.txt, and corresponding sources are

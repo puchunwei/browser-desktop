@@ -35,6 +35,36 @@ RUN cd xrdp-0.10.6.1 \
     CPPFLAGS='-D_FORTIFY_SOURCE=2' LDFLAGS='-Wl,-z,relro -Wl,-z,now -Wl,--as-needed' \
     && make -j4 && make DESTDIR=/out install
 
+COPY tests/display-scale-c.py /build/display-scale-c.py
+RUN python3 -I /build/display-scale-c.py /build/xrdp-0.10.6.1 /build/check-scale
+
+FROM ${DEBIAN_IMAGE} AS openbox-build
+ARG APT_MIRROR=http://deb.debian.org
+COPY image/apt/preferences /etc/apt/preferences.d/browser-desktop
+COPY image/apt/write-sources.sh /usr/local/sbin/write-sources.sh
+RUN sh /usr/local/sbin/write-sources.sh "$APT_MIRROR" \
+    && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential curl ca-certificates xz-utils patch pkg-config autoconf automake libtool autopoint gettext \
+    libxrender-dev libglib2.0-dev libxml2-dev libxt-dev libxinerama-dev libxrandr-dev \
+    libpango1.0-dev libx11-dev libimlib2-dev libxcursor-dev libxi-dev libstartup-notification0-dev librsvg2-dev
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docbook-to-man
+WORKDIR /build
+# Reproduce Debian 3.6.1-12 sources and patchset; retain packaged runtime libraries/configuration.
+RUN curl -fL --retry 3 https://deb.debian.org/debian/pool/main/o/openbox/openbox_3.6.1.orig.tar.gz -o openbox.tar.gz \
+    && echo '8b4ac0760018c77c0044fab06a4f0c510ba87eae934d9983b10878483bde7ef7  openbox.tar.gz' | sha256sum -c - \
+    && curl -fL --retry 3 https://deb.debian.org/debian/pool/main/o/openbox/openbox_3.6.1-12.debian.tar.xz -o debian.tar.xz \
+    && echo 'cf7c2fe6e9f31a46c2955d78ea8b301072742e954e16bc4d7f86b6b5cf312775  debian.tar.xz' | sha256sum -c - \
+    && tar -xzf openbox.tar.gz && tar -xJf debian.tar.xz -C openbox-3.6.1
+COPY image/patches/openbox-maximized-chrome.patch /build/
+RUN cd openbox-3.6.1 \
+    && for patch_file in $(sed '/^#/d; /^$/d' debian/patches/series); do patch -p1 < "debian/patches/$patch_file"; done \
+    && patch -p1 < /build/openbox-maximized-chrome.patch \
+    && autoreconf -fi \
+    && ./configure --prefix=/usr --sysconfdir=/etc --enable-librsvg --libexecdir=/usr/lib/x86_64-linux-gnu \
+    CFLAGS='-O2 -fstack-protector-strong -fstack-clash-protection -Wformat -Werror=format-security -fcf-protection' \
+    CPPFLAGS='-D_FORTIFY_SOURCE=2' LDFLAGS='-Wl,-z,relro -Wl,-z,now -Wl,--as-needed' \
+    && make -j4
+
 FROM ${DEBIAN_IMAGE}
 ARG APT_MIRROR=http://deb.debian.org
 # forky provides only the RDP stack (xrdp 0.10 with GFX/H.264); everything else is trixie.
@@ -72,6 +102,7 @@ RUN sh /usr/local/sbin/write-sources.sh "$APT_MIRROR" \
 COPY --from=xrdp-build /out/usr/sbin/ /usr/sbin/
 COPY --from=xrdp-build /out/usr/bin/ /usr/bin/
 COPY --from=xrdp-build /out/usr/lib/x86_64-linux-gnu/ /usr/lib/x86_64-linux-gnu/
+COPY --from=openbox-build /build/openbox-3.6.1/openbox/.libs/openbox /usr/bin/openbox
 # XTest primes Chrome's XIM context before its first Unicode commit.
 # Fail the build if the required runtime library is absent.
 RUN dpkg-query -W -f='${Status}\n' libxtst6 | grep -qx 'install ok installed' \

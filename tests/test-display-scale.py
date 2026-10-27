@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 sys.dont_write_bytecode = True
 SCRIPT = Path(__file__).resolve().parents[1] / 'image/display-scale.py'
@@ -131,6 +133,85 @@ class DensityTests(unittest.TestCase):
         self.event()
         self.event(kind='resize', width=640)
         self.assertEqual(len(self.applied), count)
+
+    def test_menu_scale_restore_and_recovery_use_immutable_sizes(self):
+        template = self.root / 'template.xml'
+        destination = self.root / 'config/openbox/rc.xml'
+        template.write_text('''<openbox_config xmlns="http://openbox.org/3.4/rc"><theme>
+        <font place="MenuItem"><size>9</size></font>
+        <font place="MenuHeader"><size>9</size></font>
+        <font place="ActiveWindow"><size>8</size></font></theme></openbox_config>''')
+        menu = self.module.OpenboxMenu(template, destination)
+        with patch.object(self.module.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as reconfigure:
+            for scale, expected in ((100, 9), (150, 14), (200, 18), (300, 27), (100, 9)):
+                menu.apply(scale)
+                sizes = [int(e.text) for e in ET.parse(destination).iter()
+                         if e.tag.endswith('}size')]
+                self.assertEqual(sizes, [expected, expected, 8])
+            count = reconfigure.call_count
+            menu.apply(100)
+            self.module.OpenboxMenu(template, destination).apply(100)
+            self.assertEqual(reconfigure.call_count, count)
+            self.assertEqual(reconfigure.call_args.args[0], ['openbox', '--reconfigure'])
+        self.assertIn('<size>9</size>', template.read_text())
+
+    def test_menu_timeout_keeps_authenticated_state_and_retries_without_new_event(self):
+        template, destination = self.root / 'template.xml', self.root / 'rc.xml'
+        template.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><theme>'
+                            '<font place="MenuItem"><size>9</size></font></theme></openbox_config>')
+        notified = self.root / 'wm-applied.xml'
+        outcomes = [0, subprocess.TimeoutExpired(['openbox', '--reconfigure'], 2), 0]
+        def notify(*args, **kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            notified.write_bytes(destination.read_bytes())
+            return subprocess.CompletedProcess(args[0], outcome)
+        menu = self.module.OpenboxMenu(template, destination)
+        daemon = self.module.XSettings(self.root / 'xsettings.conf', menu)
+        with patch.object(self.module.subprocess, 'run', side_effect=notify), \
+                patch.object(self.module.time, 'monotonic', return_value=100) as clock:
+            self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', daemon.apply, self.worker_lookup)
+            self.event(scale=200)
+            self.assertEqual(json.loads((self.root / 'state').read_text())['pid'], 42)
+            self.assertEqual(json.loads((self.root / 'state').read_text())['desktop'], 200)
+            self.assertIn('Xft/DPI 196608', daemon.path.read_text())
+            self.assertIn('<size>9</size>', notified.read_text())
+            # The existing controller readiness loop retries notification without
+            # needing another RDP event or rewriting the negotiated density.
+            with patch.object(self.module, 'selection_ready', return_value=True), \
+                    patch.object(self.module.subprocess, 'Popen') as child:
+                child.return_value.poll.return_value = None
+                daemon.ready()
+                self.assertIn('<size>9</size>', notified.read_text())
+                clock.return_value = 103
+                daemon.ready()
+            self.assertIn('<size>18</size>', notified.read_text())
+            self.assertEqual(self.policy.status()['scale'], 200)
+            self.assertEqual(outcomes, [])
+
+    def test_menu_nonzero_notification_recovers_after_controller_restart(self):
+        template, destination = self.root / 'template.xml', self.root / 'rc.xml'
+        template.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><theme>'
+                            '<font place="MenuItem"><size>9</size></font></theme></openbox_config>')
+        notified = self.root / 'wm-applied.xml'
+        outcomes = [0, 1, 0]
+        def notify(*args, **kwargs):
+            outcome = outcomes.pop(0)
+            if outcome == 0:
+                notified.write_bytes(destination.read_bytes())
+            return subprocess.CompletedProcess(args[0], outcome)
+        with patch.object(self.module.subprocess, 'run', side_effect=notify):
+            menu = self.module.OpenboxMenu(template, destination)
+            menu.apply(100)
+            menu.apply(300)
+            self.assertIn('<size>27</size>', destination.read_text())
+            self.assertIn('<size>9</size>', notified.read_text())
+            recovered = self.module.OpenboxMenu(template, destination)
+            recovered.apply(300)
+            self.assertIn('<size>27</size>', notified.read_text())
+            recovered.apply(300)
+            self.assertEqual(outcomes, [])
 
     def test_stale_worker_resize_does_not_change_current_client(self):
         self.event(pid=42)

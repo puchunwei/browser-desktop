@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+import xml.etree.ElementTree as ET
 
 SOCKET = '/run/xrdp/display-scale/control.sock'
 RUNTIME = Path('/run/browser-desktop')
@@ -200,11 +201,62 @@ def child_guard(parent_pid):
         os._exit(1)
 
 
-class XSettings:
-    def __init__(self, path):
-        self.path, self.child, self.retry_at = path, None, 0
+class OpenboxMenu:
+    """Derive session menu fonts from the immutable image configuration."""
+    def __init__(self, template, destination):
+        self.template, self.destination = template, destination
+        self.notified = destination.with_name(destination.name + '.notified')
+        self.pending, self.retry_at = None, 0
 
     def apply(self, scale):
+        namespace = 'http://openbox.org/3.4/rc'
+        ET.register_namespace('', namespace)
+        tree = ET.parse(self.template)
+        for font in tree.findall(f'.//{{{namespace}}}font'):
+            if font.get('place') in ('MenuItem', 'MenuHeader'):
+                size = font.find(f'{{{namespace}}}size')
+                size.text = str(max(1, round(int(size.text) * scale / 100)))
+        content = ET.tostring(tree.getroot(), encoding='UTF-8', xml_declaration=True)
+        digest = hashlib.sha256(content).hexdigest()
+        changed = not self.destination.exists() or self.destination.read_bytes() != content
+        if not changed and read_json(self.notified) == digest:
+            self.pending = None
+            return
+        if changed:
+            self.destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.destination.with_suffix('.new')
+            temporary.write_bytes(content)
+            temporary.replace(self.destination)
+        if self.pending != digest:
+            self.pending, self.retry_at = digest, 0
+        self.ensure()
+
+    def ensure(self):
+        if self.pending is None or time.monotonic() < self.retry_at:
+            return
+        # Before session startup there is no WM yet; it will read this file.
+        # A slow/unavailable WM must not discard an authenticated density event.
+        # Persist only successful notifications, so restart can retry unchanged XML.
+        try:
+            result = subprocess.run(['openbox', '--reconfigure'], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=2, check=False)
+            if result.returncode == 0:
+                atomic_json(self.notified, self.pending)
+                self.pending = None
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        self.retry_at = time.monotonic() + 2
+        print('display-scale: menu notification pending retry', file=sys.stderr, flush=True)
+
+
+class XSettings:
+    def __init__(self, path, menu=None):
+        self.path, self.child, self.retry_at, self.menu = path, None, 0, menu
+
+    def apply(self, scale):
+        if self.menu:
+            self.menu.apply(scale)
         temporary = self.path.with_suffix('.new')
         temporary.write_text(settings(scale))
         temporary.replace(self.path)
@@ -212,6 +264,8 @@ class XSettings:
             self.child.send_signal(signal.SIGHUP)
 
     def ready(self):
+        if self.menu:
+            self.menu.ensure()
         if self.child and self.child.poll() is None:
             return selection_ready()
         if time.monotonic() >= self.retry_at:
@@ -253,7 +307,8 @@ def serve():
     # Lock survives stale socket files, but never permits two controller owners.
     with (RUNTIME / 'display-scale.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        daemon = XSettings(RUNTIME / 'xsettings.conf')
+        daemon = XSettings(RUNTIME / 'xsettings.conf', OpenboxMenu(
+            Path('/etc/xdg/openbox/rc.xml'), Path.home() / '.config/openbox/rc.xml'))
         policy = Policy(Path(os.environ['BROWSER_PROFILE_DIR']) / '.browser-desktop-scale.json',
                         RUNTIME / 'display-scale-state.json', daemon.apply)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)

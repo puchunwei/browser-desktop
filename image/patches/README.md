@@ -209,3 +209,44 @@ Use a short private output directory to fit the Unix socket path length.
 Real running-Chrome/negotiated-RDP checks remain required, especially fractional
 150%, native phone 300%, controller recovery, trusted click coordinates and
 page/process preservation. FreeRDP does not establish Jump/VNC visual parity.
+
+
+## Maximized Chrome on narrow desktops
+
+`openbox-maximized-chrome.patch` modifies Debian Openbox 3.6.1-12's
+`client_try_configure()`. A maximized Chrome main window can advertise a 500 DIP
+minimum, exceeding a 390 DIP phone desktop at 300%. Stock Openbox reapplies that
+minimum after selecting the maximized workarea and clips the renderer and toolbar.
+The patch caps the local minimum constraints to the selected workarea only for
+fully maximized, normal, nontransient, nonprompt `Google-chrome` windows. It leaves
+application hints, maximum constraints, other applications and ordinary windows
+alone. The real regression requires renderer width, X11 window geometry, toolbar
+and menu access, trusted right-edge clicks and return to Mac in the same browser.
+
+The Dockerfile reproduces the Debian patch series, regenerates autotools files
+with `autoreconf -fi` (needed for the Debian Xi dependency and autostart target),
+and builds with the same hardening flags as xrdp. Only the main executable replaces
+the packaged binary; packaged libraries and configuration remain installed.
+Sources are available directly from Debian:
+
+- [Openbox 3.6.1 source](https://deb.debian.org/debian/pool/main/o/openbox/openbox_3.6.1.orig.tar.gz),
+  SHA-256 `8b4ac0760018c77c0044fab06a4f0c510ba87eae934d9983b10878483bde7ef7`.
+- [Debian 3.6.1-12 patchset](https://deb.debian.org/debian/pool/main/o/openbox/openbox_3.6.1-12.debian.tar.xz),
+  SHA-256 `cf7c2fe6e9f31a46c2955d78ea8b301072742e954e16bc4d7f86b6b5cf312775`.
+
+Extract the upstream archive, extract the Debian archive inside it, apply every
+entry of `debian/patches/series` followed by the local patch, then run the configure
+and make commands in `image/Dockerfile`. Debian's GPL license and copyright remain
+at `/usr/share/doc/openbox/copyright`; this recipe and local patch ship under
+`/usr/share/doc/browser-desktop/patches/`.
+
+Openbox does not consume Chrome's XSettings density. The desktop controller derives
+MenuItem/MenuHeader font sizes from the immutable image rc.xml into the dedicated
+user's Openbox configuration and reconfigures the same WM when the content changes.
+Repeated density events and controller recovery do not compound fonts or repeatedly
+reconfigure. The real matrix checks menu crops and pointer selection at fractional,
+200% and 300% density, and restores the 100% menu when returning to Mac.
+Menu notification is bounded to two seconds. A timeout or failed notification does
+not discard the authenticated connection or its XSettings update. The controller
+retries through its existing readiness loop; a digest recorded only after success
+also lets a restarted controller retry unchanged XML that was never notified.

@@ -3,3 +3,8 @@
 !seccomp/
 !LICENSE
 !NOTICE
+
+# Compile the actual density parser/sender under ASan/UBSan in the build stage.
+!tests/
+tests/*
+!tests/display-scale-c.py

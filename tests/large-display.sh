@@ -29,7 +29,7 @@ for mode in compressed uncompressed; do
     # xrdp reads this setting for each new connection. FreeRDP's -compression
     # controls bulk compression and does not select uncompressed bitmap updates.
     "${docker[@]}" exec "$container" sed -i "s/^bitmap_compression=.*/bitmap_compression=$enabled/" /etc/xrdp/xrdp.ini
-    for size in 1280x720 3840x2160 4096x2160 6016x3384 8192x2160; do
+    for size in 1280x720 1386x640 1170x2532 2532x1170 3840x2160 4096x2160 6016x3384 8192x2160; do
         phase="$evidence/$mode-$size"
         mkdir -p "$phase"
         before=$("${docker[@]}" exec "$container" wc -l /var/log/xrdp.log | awk '{print $1}')
@@ -51,4 +51,4 @@ for mode in compressed uncompressed; do
         fi
     done
 done
-echo 'PASS: legacy desktop colors and real clicks at 1280, 3840, 4096, 6016 and 8192 pixels, with and without compression'
+echo 'PASS: legacy desktop colors and real clicks at 1280, 1386, 1170, 2532, 3840, 4096, 6016 and 8192 pixels, with and without compression'
