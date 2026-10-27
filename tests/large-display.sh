@@ -38,7 +38,11 @@ for mode in compressed uncompressed; do
             -v "$HERE/rdp-client/large-display.py:/large-display.py:ro" \
             "$client_image" timeout 110 xvfb-run -a -s "-screen 0 ${size}x24" \
             python3 /large-display.py "$rdp_host" "$rdp_port" "$size" \
-            > "$phase/result.log" 2>&1
+            > "$phase/result.log" 2>&1 || {
+                cat "$phase/result.log" >&2
+                tail -n 12 "$phase/freerdp.log" >&2 || true
+                exit 1
+            }
         cat "$phase/result.log"
         "${docker[@]}" exec "$container" tail -n "+$((before+1))" /var/log/xrdp.log > "$phase/server.log"
         if grep -Eq 'starting gfx|decompressed size too big|compressed size too big|lines_sending == zero' "$phase/server.log"; then
