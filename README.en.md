@@ -55,6 +55,11 @@ whole Chrome UI. Auto follows valid negotiated RDP desktop density and falls bac
 when metadata is missing. It does not guess a device from window dimensions. Scale changes
 keep the running browser, tabs, drafts and scroll position; page zoom is independent.
 
+Application compatibility: Chrome updates its pixel density, but some canvas applications
+cache their initial density and need separate checks after a scale change. Save unfinished
+input before reloading such an application. Desktop density changes never reload pages
+automatically and do not establish that every application's sharpness issue is resolved.
+
 Press **Ctrl+Alt+S** above Chrome to choose Auto, 100% Phone compatibility, 150% Larger text,
 200% Mac Retina / 2x phone, or 300% Phone Retina. Examples: 6016×3384 at 200% represents a
 3008×1692 logical desktop; 1170×2532 at 300% represents about 390×844.
