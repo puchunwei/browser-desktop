@@ -23,6 +23,7 @@ RUN cd xrdp-0.10.6.1 \
     && patch -p1 < /patches/queued-resize.patch \
     && patch -p1 < /patches/ordered-unicode.patch \
     && patch -p1 < /patches/lazy-unicode-engine.patch \
+    && patch -p1 < /patches/large-bitmap.patch \
     && autoreconf -fi \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
     --libdir=/usr/lib/x86_64-linux-gnu --libexecdir=/usr/lib/x86_64-linux-gnu \

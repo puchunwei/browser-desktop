@@ -26,6 +26,10 @@ ${colors.map((color, i) => `<button id="zone-${i}" style="background:rgb(${color
     const { targetId } = await call('Target.createTarget', { url: `data:text/html,${encodeURIComponent(html)}` });
     writeFileSync(file, JSON.stringify({ targetId }), { mode: 0o600 });
     await call('Target.activateTarget', { targetId });
+    if (process.argv[5] === '--maximize') {
+        const { windowId } = await call('Browser.getWindowForTarget', { targetId });
+        await call('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
+    }
 } else {
     const { targetId } = JSON.parse(readFileSync(file, 'utf8'));
     if (!(await call('Target.closeTarget', { targetId })).success) throw new Error('could not close rotation test tab');
