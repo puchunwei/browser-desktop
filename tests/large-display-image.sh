@@ -31,11 +31,17 @@ done
 "${docker[@]}" cp "$name:/data/rdp/password" "$evidence/password"
 client_image=${RDP_CLIENT_IMAGE:-browser-desktop-rdp-client:visual}
 if [[ -z ${RDP_CLIENT_IMAGE:-} ]]; then
+    base_args=()
+    [[ -z ${DEBIAN_IMAGE:-} ]] || base_args+=(--build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE")
     "${docker[@]}" build --network host --build-arg "APT_MIRROR=${APT_MIRROR:-http://deb.debian.org}" \
+        "${base_args[@]}" \
         --build-arg "HTTP_PROXY=${HTTP_PROXY:-}" --build-arg "HTTPS_PROXY=${HTTPS_PROXY:-}" \
         --build-arg "http_proxy=${http_proxy:-}" --build-arg "https_proxy=${https_proxy:-}" \
         --build-arg "NO_PROXY=${NO_PROXY:-}" --build-arg "no_proxy=${no_proxy:-}" \
-        -t "$client_image" "$HERE/rdp-client" > "$evidence/client-build.log" 2>&1
+        -t "$client_image" "$HERE/rdp-client" > "$evidence/client-build.log" 2>&1 || {
+            tail -n 12 "$evidence/client-build.log" >&2
+            exit 1
+        }
 fi
 VERIFY_DISPOSABLE=1 RDP_CLIENT_IMAGE="$client_image" bash "$HERE/large-display.sh" \
     "$name" 127.0.0.1 "$rdp_port" "$cdp_port" "$evidence/password" "$evidence/results"

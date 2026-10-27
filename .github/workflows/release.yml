@@ -57,7 +57,12 @@ jobs:
       - name: Startup checks
         run: REQUIRE_SANDBOX=0 bash tests/startup-checks.sh browser-desktop:release
       - name: Large legacy RDP desktop pixels and input
-        run: bash tests/large-display-image.sh browser-desktop:release "$RUNNER_TEMP/large-display"
+        run: |
+          set -o pipefail
+          bash tests/large-display-image.sh browser-desktop:release "$RUNNER_TEMP/large-display" 2>&1 | tee large-display.log || {
+            tail -n 12 large-display.log | sed 's/%/%25/g; s/^/::error title=large display regression::/'
+            exit 1
+          }
       - name: Push to GHCR
         env:
           IMAGE: ghcr.io/${{ github.repository }}
