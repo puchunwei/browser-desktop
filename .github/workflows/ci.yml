@@ -39,3 +39,5 @@ jobs:
         run: bash tests/privacy-scan.sh image browser-desktop:ci
       - name: Startup checks
         run: REQUIRE_SANDBOX=0 bash tests/startup-checks.sh browser-desktop:ci
+      - name: Large legacy RDP desktop pixels and input
+        run: bash tests/large-display-image.sh browser-desktop:ci "$RUNNER_TEMP/large-display"

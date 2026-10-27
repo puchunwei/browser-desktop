@@ -1,0 +1,59 @@
+--- a/libxrdp/libxrdp.c
++++ b/libxrdp/libxrdp.c
+@@ -448,6 +448,56 @@
+             server_line_bytes = width;
+             break;
+     }
++    /* The planar compressor has 4096 pixels per plane, and a bitmap update
++     * must fit MAX_BITMAP_BUF_SIZE. A wide scanline can exceed either limit
++     * before the compressor gets a chance to reduce its number of rows.
++     * Split wide inputs before compression, with a bounded staging buffer.
++     * Keep the normal path for smaller bitmaps and all negotiated codecs.
++     */
++    if (width > 2048)
++    {
++        int source_Bpp = server_line_bytes / width;
++        int tile_x;
++        int tile_y;
++        int tile_width;
++        int tile_height;
++        int tile_cx;
++        int row;
++        int rv = 0;
++        char *tile;
++
++        if (cx < 1 || cy < 1 || cx > width || cy > height)
++        {
++            return 1;
++        }
++        tile = (char *)g_malloc(2048 * 64 * source_Bpp, 0);
++        if (tile == NULL)
++        {
++            return 1;
++        }
++        for (tile_y = 0; tile_y < cy && rv == 0; tile_y += 64)
++        {
++            tile_height = MIN(64, cy - tile_y);
++            for (tile_x = 0; tile_x < cx && rv == 0; tile_x += 2048)
++            {
++                tile_width = MIN(2048, width - tile_x);
++                tile_cx = MIN(tile_width, cx - tile_x);
++                for (row = 0; row < tile_height; ++row)
++                {
++                    g_memcpy(tile + row * tile_width * source_Bpp,
++                             data + (tile_y + row) * server_line_bytes
++                                  + tile_x * source_Bpp,
++                             tile_width * source_Bpp);
++                }
++                rv = libxrdp_send_bitmap(session, tile_width, tile_height,
++                                        bpp, tile, x + tile_x, y + tile_y,
++                                        tile_cx, tile_height);
++            }
++        }
++        g_free(tile);
++        return rv;
++    }
++
+     line_bytes = width * Bpp;
+     line_pad_bytes = line_bytes + e * Bpp;
+ 

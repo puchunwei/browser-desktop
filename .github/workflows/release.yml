@@ -56,6 +56,8 @@ jobs:
         run: bash tests/privacy-scan.sh image browser-desktop:release
       - name: Startup checks
         run: REQUIRE_SANDBOX=0 bash tests/startup-checks.sh browser-desktop:release
+      - name: Large legacy RDP desktop pixels and input
+        run: bash tests/large-display-image.sh browser-desktop:release "$RUNNER_TEMP/large-display"
       - name: Push to GHCR
         env:
           IMAGE: ghcr.io/${{ github.repository }}

@@ -1,5 +1,25 @@
 # RDP compatibility patches
 
+## Wide legacy bitmap updates
+
+`large-bitmap.patch` is a local fix against pinned xrdp 0.10.6.1. Its legacy
+32-bit planar compressor uses 4096-pixel planes. A scanline wider than that
+overlaps adjacent planes before the row-count limit is checked, causing color
+corruption. A wide row can also exceed the 16 KiB bitmap update budget. Retina
+viewers can request desktops wider than 4096 pixels even on a 4K monitor.
+
+The patch splits inputs wider than 2048 pixels before compression, into blocks
+at most 2048 by 64 pixels. The temporary copy is bounded to 512 KiB at 32 bpp;
+each block retains its destination coordinates and visible crop. Both compressed
+and uncompressed legacy updates use the existing sender for the bounded blocks.
+Negotiated GFX encoding is unaffected. This is not an upstream backport.
+
+`tests/rdp-client/large-display.py` checks decoded colors across the 4096-pixel
+boundary and the desktop edges, using a disposable desktop with the synthetic
+rotation target maximized. Run it with a 32-bit legacy connection; omit the
+FreeRDP `gfx` option entirely because its presence enables GFX even when spelled
+`-gfx` in FreeRDP 3.15. Evidence must include the negotiated server path.
+
 ## Rotation while output is suppressed
 
 `queued-resize.patch` is a local compatibility fix against the same pinned
