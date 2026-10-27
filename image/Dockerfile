@@ -24,6 +24,7 @@ RUN cd xrdp-0.10.6.1 \
     && patch -p1 < /patches/ordered-unicode.patch \
     && patch -p1 < /patches/lazy-unicode-engine.patch \
     && patch -p1 < /patches/large-bitmap.patch \
+    && patch -p1 < /patches/display-scale.patch \
     && autoreconf -fi \
     && ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
     --libdir=/usr/lib/x86_64-linux-gnu --libexecdir=/usr/lib/x86_64-linux-gnu \
@@ -51,7 +52,7 @@ RUN sh /usr/local/sbin/write-sources.sh "$APT_MIRROR" \
     && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 755 /usr/sbin/policy-rc.d \
     && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     xrdp=${XRDP_VERSION} xorgxrdp=${XORGXRDP_VERSION} xserver-xorg-core xserver-xorg-legacy \
-    openbox supervisor socat curl ca-certificates libnss3-tools openssl \
+    openbox supervisor socat curl ca-certificates libnss3-tools openssl xsettingsd \
     x11-utils x11-xserver-utils xauth fonts-noto-cjk fonts-noto-color-emoji \
     python3 python3-websocket procps ibus ibus-gtk3 ibus-libpinyin dbus-x11 \
     && curl -fL --retry 3 \
@@ -95,6 +96,7 @@ EXPOSE 3389
 COPY image/entrypoint.sh /entrypoint.sh
 COPY image/startwm.sh /etc/xrdp/startwm.sh
 COPY image/ibus-session.sh /usr/local/bin/ibus-session.sh
+COPY image/display-scale.py /usr/local/bin/display-scale.py
 COPY image/configure-openbox.py image/configure-cursors.py /usr/local/libexec/
 COPY image/supervisord.conf /etc/supervisor/browser.conf
 COPY image/browser-desktop.gschema.override /usr/share/glib-2.0/schemas/90_browser-desktop.gschema.override
@@ -102,7 +104,7 @@ COPY image/gtk-settings.ini /etc/gtk-3.0/settings.ini
 COPY seccomp/chrome.json /usr/share/browser-desktop/chrome-seccomp.json
 COPY LICENSE NOTICE /usr/share/doc/browser-desktop/
 COPY image/patches/ /usr/share/doc/browser-desktop/patches/
-RUN chmod 755 /entrypoint.sh /etc/xrdp/startwm.sh /usr/local/bin/ibus-session.sh \
+RUN chmod 755 /entrypoint.sh /etc/xrdp/startwm.sh /usr/local/bin/ibus-session.sh /usr/local/bin/display-scale.py \
     && python3 -I /usr/local/libexec/configure-openbox.py \
     && python3 -I /usr/local/libexec/configure-cursors.py \
     && /usr/lib/x86_64-linux-gnu/glib-2.0/glib-compile-schemas /usr/share/glib-2.0/schemas \

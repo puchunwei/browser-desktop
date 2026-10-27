@@ -1,0 +1,211 @@
+Local dynamic density support for pinned xrdp 0.10.6.1. Apply after existing patches.
+
+--- a/common/xrdp_client_info.h
++++ b/common/xrdp_client_info.h
+@@ -265,6 +265,10 @@
+     int vmconnect; /* Used when used from inside Hyper-V */
+ 
+     enum unicode_input_state unicode_input_support;
++
++    /* Private CS_CORE density metadata. Do not move into the xorgxrdp ABI. */
++    unsigned int session_desktop_scale;
++    unsigned int session_device_scale;
+ };
+ 
+ enum xrdp_encoder_flags
+--- a/libxrdp/xrdp_sec.c
++++ b/libxrdp/xrdp_sec.c
+@@ -1869,6 +1869,28 @@
+ /*****************************************************************************/
+ /* http://msdn.microsoft.com/en-us/library/cc240510.aspx
+    2.2.1.3.2 Client Core Data (TS_UD_CS_CORE) */
++/* Optional CS_CORE scale fields form a pair, including when truncated. */
++static void
++xrdp_sec_read_desktop_scale(struct stream *s, struct xrdp_client_info *client_info)
++{
++    unsigned int desktop;
++    unsigned int device;
++    client_info->session_desktop_scale = 0;
++    client_info->session_device_scale = 0;
++    if (!s_check_rem(s, 8))
++    {
++        return;
++    }
++    in_uint32_le(s, desktop);
++    in_uint32_le(s, device);
++    if (desktop >= 100 && desktop <= 500 &&
++            (device == 100 || device == 140 || device == 180))
++    {
++        client_info->session_desktop_scale = desktop;
++        client_info->session_device_scale = device;
++    }
++}
++
+ static int
+ xrdp_sec_process_mcs_data_CS_CORE(struct xrdp_sec *self, struct stream *s)
+ {
+@@ -1895,6 +1917,8 @@
+     /* Clear physical sizes. These are optional and may not be read later */
+     client_info->session_physical_width = 0;
+     client_info->session_physical_height = 0;
++    client_info->session_desktop_scale = 0;
++    client_info->session_device_scale = 0;
+ 
+     /* TS_UD_CS_CORE required fields */
+     if (!s_check_rem_and_log(s, CS_CORE_MIN_LENGTH,
+@@ -2153,8 +2177,22 @@
+     LOG_DEVEL(LOG_LEVEL_TRACE, "Received [MS-RDPBCGR] TS_UD_CS_CORE "
+               "<Optional Field> desktopOrientation (ignored)");
+ 
++    xrdp_sec_read_desktop_scale(s, client_info);
+     return 0;
+ #undef CS_CORE_MIN_LENGTH
++}
++
++/* CS_CORE optional fields end at this GCC block, not the enclosing packet. */
++static int
++xrdp_sec_process_core_block(struct xrdp_sec *self, struct stream *s, int length)
++{
++    struct stream core = *s;
++    if (length < 0 || !s_check_rem(s, length))
++    {
++        return 1;
++    }
++    core.end = core.p + length;
++    return xrdp_sec_process_mcs_data_CS_CORE(self, &core);
+ }
+ 
+ /*****************************************************************************/
+@@ -2503,7 +2541,7 @@
+         switch (tag)
+         {
+             case SEC_TAG_CLI_INFO:     /* CS_CORE           0xC001 */
+-                if (xrdp_sec_process_mcs_data_CS_CORE(self, s) != 0)
++                if (xrdp_sec_process_core_block(self, s, size - 4) != 0)
+                 {
+                     LOG(LOG_LEVEL_ERROR,
+                         "Processing [MS-RDPBCGR] TS_UD_CS_CORE failed");
+--- a/libxrdp/libxrdp.c
++++ b/libxrdp/libxrdp.c
+@@ -1880,10 +1880,9 @@
+             && monitor_layout->desktop_scale_factor == 0
+             && monitor_layout->device_scale_factor == 0)
+     {
+-        /* Module expects us to provide defaults */
++        /* Preserve absent density for the session policy's CS_CORE fallback.
++         * xorgxrdp 0.10.5 does not consume the two scale fields. */
+         monitor_layout->orientation = ORIENTATION_LANDSCAPE;
+-        monitor_layout->desktop_scale_factor = 100;
+-        monitor_layout->device_scale_factor = 100;
+         return;
+     }
+ 
+@@ -1960,8 +1959,9 @@
+ 
+     if (check_desktop_scale_factor || check_device_scale_factor)
+     {
+-        monitor_layout->desktop_scale_factor = 100;
+-        monitor_layout->device_scale_factor = 100;
++        /* An invalid pair is distinct from an absent pair (0/0). */
++        monitor_layout->desktop_scale_factor = 0;
++        monitor_layout->device_scale_factor = 1;
+     }
+ }
+ 
+--- a/xup/xup.c
++++ b/xup/xup.c
+@@ -26,6 +26,71 @@
+ #include "log.h"
+ #include "trans.h"
+ #include "string_calls.h"
++#include <stdio.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++/* Called only after authentication, from the connected Xorg module. A missing
++ * or congested controller must never hold up the RDP worker. No client strings
++ * are logged or written to disk; the controller hashes the bounded hint. */
++static void
++send_desktop_scale(struct mod *mod, const char *kind, int width, int height,
++                   int count, const struct monitor_info *monitors)
++{
++    const struct xrdp_client_info *ci = &mod->client_info;
++    static const char hex[] = "0123456789abcdef";
++    char hint[sizeof(ci->hostname) * 2 + 1];
++    char message[2048];
++    size_t i;
++    int used = 0;
++    int added;
++    int fd;
++    struct sockaddr_un address;
++    if (width < 1 || width > 32768 || height < 1 || height > 32768 ||
++            count < 0 || count > CLIENT_MONITOR_DATA_MAXIMUM_MONITORS ||
++            (count && monitors == NULL))
++    {
++        return;
++    }
++    for (i = 0; i < sizeof(ci->hostname) && ci->hostname[i] != '\0'; ++i)
++    {
++        unsigned char c = (unsigned char)ci->hostname[i];
++        hint[i * 2] = hex[c >> 4];
++        hint[i * 2 + 1] = hex[c & 15];
++    }
++    hint[i * 2] = '\0';
++#define SCALE_APPEND(...) do { \
++    added = snprintf(message + used, sizeof(message) - used, __VA_ARGS__); \
++    if (added < 0 || (size_t)added >= sizeof(message) - used) { return; } \
++    used += added; \
++} while (0)
++    SCALE_APPEND("{\"op\":\"event\",\"kind\":\"%s\",\"desktop\":%u,"
++                 "\"device\":%u,\"hint\":\"%s\",\"os\":[%d,%d],"
++                 "\"width\":%d,\"height\":%d,\"monitors\":[",
++                 kind, ci->session_desktop_scale, ci->session_device_scale,
++                 hint, ci->client_os_major, ci->client_os_minor, width, height);
++    for (i = 0; i < (size_t)count; ++i)
++    {
++        SCALE_APPEND("%s[%u,%u]", i ? "," : "",
++                     monitors[i].desktop_scale_factor, monitors[i].device_scale_factor);
++    }
++    SCALE_APPEND("]}");
++#undef SCALE_APPEND
++    fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
++    if (fd < 0)
++    {
++        return;
++    }
++    memset(&address, 0, sizeof(address));
++    address.sun_family = AF_UNIX;
++    snprintf(address.sun_path, sizeof(address.sun_path), "%s",
++             "/run/xrdp/display-scale/control.sock");
++    (void)sendto(fd, message, used, MSG_DONTWAIT | MSG_NOSIGNAL,
++                 (struct sockaddr *)&address, sizeof(address));
++    close(fd);
++}
+ 
+ static int
+ send_server_monitor_update(struct mod *v, struct stream *s,
+@@ -1588,6 +1653,10 @@
+     int rv = send_server_monitor_update(mod, s, width, height,
+                                         num_monitors, monitors);
+     *in_progress = (rv == 0);
++    if (rv == 0)
++    {
++        send_desktop_scale(mod, "resize", width, height, num_monitors, monitors);
++    }
+     free_stream(s);
+     return rv;
+ }
+@@ -1751,6 +1820,11 @@
+     out_uint32_le(s, len);
+     lib_send_copy(mod, s);
+     free_stream(s);
++    send_desktop_scale(mod, "connect",
++                       mod->client_info.display_sizes.session_width,
++                       mod->client_info.display_sizes.session_height,
++                       mod->client_info.display_sizes.monitorCount,
++                       mod->client_info.display_sizes.minfo);
+     return 0;
+ }
+ 

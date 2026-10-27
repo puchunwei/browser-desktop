@@ -40,6 +40,11 @@ if [[ "${1:-}" == "wait-display" ]]; then
     exec "$@"
 fi
 
+# The density controller owns xsettingsd as the desktop user, never as root.
+if [[ "${1:-}" == "display-scale" ]]; then
+    exec /usr/sbin/runuser -u "$DESKTOP_USER" -- /usr/local/bin/display-scale.py serve
+fi
+
 # One persistent session for the configured desktop user.
 if [[ "${1:-}" == "session" ]]; then
     while true; do
@@ -64,6 +69,10 @@ fi
 # to close the browser normally before Supervisor stops the session.
 if [[ "${1:-}" == "browser" ]]; then
     shift
+    # Chrome must see the initial XSettings owner before creating its UI.
+    until /usr/sbin/runuser -u "$DESKTOP_USER" -- /usr/local/bin/display-scale.py status >/dev/null; do
+        sleep 0.5
+    done
     proxy_args=()
     if [[ -n "${BROWSER_PROXY_SERVER:-}" ]]; then
         proxy_args+=("--proxy-server=${BROWSER_PROXY_SERVER}")
@@ -192,6 +201,8 @@ case "$CDP_BIND_ADDRESS" in
 esac
 
 install -d -o xrdp -g xrdp -m 0755 /run/xrdp
+# Only the desktop user and the authenticated xrdp worker can use this IPC.
+install -d -o "$DESKTOP_USER" -g xrdp -m 2770 /run/xrdp/display-scale
 install -d -o root -g root -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
 install -d -o "$DESKTOP_USER" -g "$DESKTOP_USER" -m 0755 /run/browser-desktop
 rm -f "$session_file" /run/xrdp/*.pid

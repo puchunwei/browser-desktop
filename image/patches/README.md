@@ -152,3 +152,60 @@ test. This optional check overwrites only the
 fixture's clipboard and must not be enabled in the owner's session.
 A separate iPhone test remains necessary to verify the actual
 client's keyboard mode and candidate commit behavior.
+
+## Negotiated desktop density
+
+`display-scale.patch` is a local patch against pinned xrdp 0.10.6.1, applied
+last. It consumes the optional CS_CORE desktop/device scale pair only when
+both fields are present and valid (desktop 100–500; device 100, 140 or 180).
+The two fields are appended after existing private fields in client_info;
+xorgxrdp's shared field offsets and monitor layouts do not change.
+
+The authenticated Xorg module emits bounded, nonblocking Unix datagrams on
+initial client-info exchange and successful monitor resize submission. Messages
+contain scale pairs, pixel geometry and a bounded hex-encoded client preference
+hint. The session controller accepts events only from the xrdp UID using Linux
+SCM_CREDENTIALS and hashes hints before persistence. Hints are never identities
+or access-control decisions. An empty hint cannot create a shared preference.
+A missing controller or full socket queue never blocks the RDP path.
+
+Upstream normalizes absent/invalid monitor scale pairs to 100/100, making them
+indistinguishable from an explicit 100% request. The patch preserves absent
+pairs as 0/0 and marks invalid pairs as 0/1. The pinned xorgxrdp 0.10.5 sources
+do not consume either scale field; revisit this compatibility assumption on
+upgrades. Physical-size and orientation sanitizing remains upstream behavior.
+Valid coherent monitor metadata takes priority over CS_CORE; mixed or partially
+invalid monitor densities explicitly fall back to 100% until a manual choice.
+No width threshold or device-model guess is used.
+
+`display-scale.py` supervises xsettingsd as the desktop user. Chrome waits for a
+live XSettings selection before starting. Baseline Xft/DPI is 98304, and a
+200% desktop uses 196608 with Gdk/WindowScalingFactor 2 and UnscaledDPI 98304.
+Fractional 150% uses WindowScalingFactor 1 and DPI/UnscaledDPI 147456. These
+settings request a dynamic whole-UI redraw, not browser/page restart or page
+zoom. Cursor theme size is requested separately; classic RDP cursor transport,
+IBus candidate windows and pointer coordinates still require real-client tests.
+
+The local CLI is `display-scale.py set auto|100|150|200|300` and
+`display-scale.py status`. Status exposes only effective scale, source, pixel
+geometry and daemon readiness. It returns nonzero while the service is absent
+or recovering. Ctrl+Alt+S opens the Openbox presets above a maximized Chrome;
+right-clicking exposed desktop opens the same menu, whereas right-clicking a
+webpage remains Chrome's own menu. Phone keyboard access and Jump gestures must
+be documented and checked on the actual device.
+
+Explicit preferences live in `.browser-desktop-scale.json` in the configured
+browser profile directory, separate from Chrome's Preferences. The bounded
+file stores only hashed hints and scale choices. Auto deletes that client's
+manual preference. Current connection state is private in `/run/browser-desktop`
+and survives controller restart; xsettingsd crashes are retried every two
+seconds without restarting Chrome. Duplicate display events do not reload it.
+
+Run `python3 tests/test-display-scale.py` for policy checks. After applying the
+patch chain to the pinned source, run
+`python3 tests/display-scale-c.py PATCHED_XRDP_SOURCE PRIVATE_OUTPUT_DIR` for
+ASan/UBSan checks of the actual C parser, monitor sanitizing and datagram sender.
+Use a short private output directory to fit the Unix socket path length.
+Real running-Chrome/negotiated-RDP checks remain required, especially fractional
+150%, native phone 300%, controller recovery, trusted click coordinates and
+page/process preservation. FreeRDP does not establish Jump/VNC visual parity.
