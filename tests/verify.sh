@@ -76,12 +76,18 @@ session_before="$(in_box pgrep -o -x xrdp-sesexec)"
 
 sesman_lines="$(in_box sh -c 'wc -l < /var/log/xrdp-sesman.log')"
 xrdp_lines="$(in_box sh -c 'wc -l < /var/log/xrdp.log')"
+base_args=()
+[[ -z ${DEBIAN_IMAGE:-} ]] || base_args+=(--build-arg "DEBIAN_IMAGE=$DEBIAN_IMAGE")
 "${docker[@]}" build --progress plain --network host \
+    "${base_args[@]}" \
     --build-arg APT_MIRROR="${APT_MIRROR:-http://deb.debian.org}" \
     --build-arg HTTP_PROXY="${HTTP_PROXY:-}" --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
     --build-arg http_proxy="${http_proxy:-}" --build-arg https_proxy="${https_proxy:-}" \
     --build-arg NO_PROXY="${NO_PROXY:-}" --build-arg no_proxy="${no_proxy:-}" \
-    -t browser-desktop-rdp-client:visual "$HERE/rdp-client" > "$evidence/client-build.log" 2>&1
+    -t browser-desktop-rdp-client:visual "$HERE/rdp-client" > "$evidence/client-build.log" 2>&1 || {
+        tail -n 25 "$evidence/client-build.log" >&2
+        fail 'RDP verification client image build failed'
+    }
 node "$HERE/visual-target.mjs" open "$cdp_port" "$evidence/target.json"
 for phase in 1 2; do
     "${docker[@]}" run --rm --init --network host \
