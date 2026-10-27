@@ -25,10 +25,16 @@ class DensityTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.applied = []
-        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append)
+        # Synthetic worker generations model only the external /proc boundary.
+        # Recovery regressions below use actual subprocess lifetimes instead.
+        self.workers = {}
+        self.worker_lookup = lambda pid: self.workers.get(pid, self.module.worker_birth(pid))
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
 
     def event(self, *, scale=200, device=100, hint='synthetic-client', kind='connect', pid=42,
-              monitors=None, width=1600, height=1000, uid=200, birth=0):
+              monitors=None, width=1600, height=1000, uid=200, birth=1, real=False):
+        if not real:
+            self.workers[pid] = birth
         event = dict(op='event', kind=kind, desktop=scale, device=device,
                      hint=hint.encode().hex(), os=[6, 0], width=width, height=height,
                      monitors=monitors or [])
@@ -107,14 +113,14 @@ class DensityTests(unittest.TestCase):
     def test_corrupt_preferences_fall_back(self):
         for data in ('{broken', '[]', '{"abc":200}', '{"' + 'a' * 64 + '":true}'):
             (self.root / 'prefs').write_text(data)
-            self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append)
+            self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
             self.event(scale=100)
             self.assertEqual(self.policy.status()['scale'], 100)
 
     def test_restart_recovers_connection_override(self):
         self.event(hint='')
         self.policy.set('150')
-        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append)
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
         self.assertEqual(self.policy.status()['scale'], 150)
         self.event(kind='resize', hint='', width=1000)
         self.assertEqual(self.policy.status()['scale'], 150)
@@ -152,6 +158,87 @@ class DensityTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(set(self.policy.status()), {'scale', 'source', 'geometry'})
 
+    def live_worker(self):
+        worker = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(lambda: worker.wait() if worker.poll() is not None else (worker.kill(), worker.wait()))
+        return worker, self.module.worker_birth(worker.pid)
+
+    def test_restart_drops_dead_workers_override_before_any_new_event(self):
+        worker, birth = self.live_worker()
+        self.event(pid=worker.pid, birth=birth, hint='client-A', real=True)
+        self.policy.set('300')
+        worker.terminate()
+        worker.wait()
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
+        self.assertEqual(self.policy.status(), dict(scale=100, source='default', geometry=[0, 0]))
+
+    def test_missed_connect_recovers_unknown_worker_from_resize_without_old_preference(self):
+        worker, birth = self.live_worker()
+        self.event(pid=worker.pid, birth=birth, hint='client-A', real=True)
+        self.policy.set('300')
+        saved_preferences = (self.root / 'prefs').read_text()
+        worker.terminate()
+        worker.wait()
+        # B connects while the controller is absent, so its connect event is lost.
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
+        self.event(pid=os.getpid(), birth=self.module.worker_birth(os.getpid()), kind='resize', real=True,
+                   hint='', scale=0, device=0, width=640, height=900)
+        self.assertEqual(self.policy.status(), dict(scale=100, source='default', geometry=[640, 900]))
+        self.policy.set('150')
+        self.assertEqual((self.root / 'prefs').read_text(), saved_preferences)
+
+    def test_manual_change_after_disconnect_does_not_overwrite_old_client_preference(self):
+        worker, birth = self.live_worker()
+        self.event(pid=worker.pid, birth=birth, hint='client-A', real=True)
+        self.policy.set('300')
+        saved_preferences = (self.root / 'prefs').read_text()
+        worker.terminate()
+        worker.wait()
+        self.policy.set('150')
+        self.assertEqual((self.root / 'prefs').read_text(), saved_preferences)
+        self.assertEqual(self.policy.status()['scale'], 150)
+
+    def test_exited_unreaped_worker_is_not_a_live_connection(self):
+        worker, birth = self.live_worker()
+        self.assertGreater(birth, 0)
+        self.event(pid=worker.pid, birth=birth, hint='client-A', real=True)
+        self.policy.set('300')
+        worker.terminate()
+        os.waitid(os.P_PID, worker.pid, os.WEXITED | os.WNOWAIT)
+        # Its /proc entry remains until wait(), but the connection is over.
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
+        self.assertEqual(self.policy.status()['scale'], 100)
+        worker.wait()
+
+    def test_restart_rejects_reused_pid_generation(self):
+        self.event(pid=os.getpid(), birth=self.module.worker_birth(os.getpid()), hint='', real=True)
+        self.policy.set('150')
+        state = json.loads((self.root / 'state').read_text())
+        state['birth'] -= 1
+        (self.root / 'state').write_text(json.dumps(state))
+        self.policy = self.module.Policy(self.root / 'prefs', self.root / 'state', self.applied.append, self.worker_lookup)
+        self.assertEqual(self.policy.status()['scale'], 100)
+
+    def test_preexec_guard_cannot_return_after_parent_mismatch_with_inherited_handler(self):
+        child = os.fork()
+        if child == 0:
+            signal.signal(signal.SIGTERM, lambda signum, frame: None)
+            self.module.child_guard(os.getppid() + 1)
+            os._exit(0)
+        _, status = os.waitpid(child, 0)
+        self.assertNotEqual(os.waitstatus_to_exitcode(status), 0, 'guard returned after parent mismatch')
+
+    def test_preexec_guard_resets_the_inherited_service_sigterm_handler(self):
+        child = os.fork()
+        if child == 0:
+            signal.signal(signal.SIGTERM, lambda signum, frame: None)
+            self.module.child_guard(os.getppid())
+            os.kill(os.getpid(), signal.SIGTERM)
+            os._exit(0)
+        _, status = os.waitpid(child, 0)
+        self.assertTrue(os.WIFSIGNALED(status), 'inherited handler swallowed SIGTERM')
+        self.assertEqual(os.WTERMSIG(status), signal.SIGTERM)
+
     def test_controller_death_does_not_leave_an_orphan_xsettings_owner(self):
         # Adopt/reap only this test's grandchildren; no host service is touched.
         libc = ctypes.CDLL(None)
@@ -164,6 +251,7 @@ class DensityTests(unittest.TestCase):
         code = ("import importlib.util, pathlib, time; "
                 f"s=importlib.util.spec_from_file_location('density', {str(SCRIPT)!r}); "
                 "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                "import signal; signal.signal(signal.SIGTERM, lambda signum, frame: None); "
                 f"d=m.XSettings(pathlib.Path({str(self.root / 'settings')!r})); "
                 "d.ready(); print(d.child.pid, flush=True); time.sleep(60)")
         env = dict(os.environ, PATH=str(self.root) + ':' + os.environ['PATH'], PYTHONDONTWRITEBYTECODE='1')

@@ -50,7 +50,8 @@ def atomic_json(path, value):
 
 
 class Policy:
-    def __init__(self, preferences, state, apply):
+    def __init__(self, preferences, state, apply, worker_lookup=None):
+        self.worker_lookup = worker_lookup or worker_birth
         self.preferences, self.state, self.apply = preferences, state, apply
         saved = read_json(preferences)
         self.preferences_map = saved if (isinstance(saved, dict) and len(saved) <= 256 and
@@ -65,7 +66,8 @@ class Policy:
                 saved['source'] in ('default', 'negotiated', 'monitor', 'mixed-monitors', 'invalid-monitors') and
                 (saved['override'] is None or (type(saved['override']) is int and str(saved['override']) in PRESETS)) and
                 isinstance(saved['geometry'], list) and len(saved['geometry']) == 2 and
-                all(integer(n, 0, 32768) for n in saved['geometry'])):
+                all(integer(n, 0, 32768) for n in saved['geometry']) and
+                saved['birth'] > 0 and self.worker_lookup(saved['pid']) == saved['birth']):
             self.current = saved
         self.last_scale = None
         self.sync()
@@ -82,13 +84,19 @@ class Policy:
             self.last_scale = scale
         atomic_json(self.state, self.current)
 
+    def expire_worker(self):
+        if self.current['pid'] and self.worker_lookup(self.current['pid']) != self.current['birth']:
+            self.current = dict(pid=0, birth=0, key='', desktop=100, source='default', override=None, geometry=[0, 0])
+            self.sync()
+
     def event(self, event, pid, birth=0):
+        self.expire_worker()
         same_worker = (pid, birth) == (self.current['pid'], self.current['birth'])
-        if event['kind'] == 'resize' and not same_worker:
+        if event['kind'] == 'resize' and not same_worker and self.current['pid']:
             return
         hint = bytes.fromhex(event['hint'])
         key = hashlib.sha256(hint + b'\0' + json.dumps(event['os']).encode()).hexdigest() if hint else ''
-        if event['kind'] == 'connect' and (not same_worker or key != self.current['key']):
+        if not same_worker or (event['kind'] == 'connect' and key != self.current['key']):
             self.current.update(pid=pid, birth=birth, key=key, override=self.preferences_map.get(key))
         desktop, source = (event['desktop'], 'negotiated') if valid_pair(event['desktop'], event['device']) else (100, 'default')
         monitors = event['monitors']
@@ -105,6 +113,7 @@ class Policy:
     def set(self, value):
         if value != 'auto' and value not in PRESETS:
             raise ValueError('invalid preset')
+        self.expire_worker()
         override = None if value == 'auto' else int(value)
         key = self.current['key']
         if key:
@@ -184,10 +193,11 @@ def selection_ready():
 def child_guard(parent_pid):
     # A SIGKILLed controller must not leave an unmanaged XSettings owner behind.
     # The controller is single-threaded; this runs in the child before exec.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     if ctypes.CDLL(None).prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
         os._exit(1)
     if os.getppid() != parent_pid:
-        os.kill(os.getpid(), signal.SIGTERM)
+        os._exit(1)
 
 
 class XSettings:
@@ -230,7 +240,8 @@ class XSettings:
 def worker_birth(pid):
     # Kernel credentials plus start ticks distinguish PID reuse after reconnects.
     try:
-        return int(Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[19])
+        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()
+        return 0 if fields[0] in ('Z', 'X') else int(fields[19])
     except (OSError, ValueError, IndexError):
         return 0
 
@@ -261,6 +272,7 @@ def serve():
         signal.signal(signal.SIGINT, stop)
         try:
             while running:
+                policy.expire_worker()
                 ready = daemon.ready()
                 try:
                     data, credentials, flags, address = server.recvmsg(MAX_EVENT + 1, socket.CMSG_SPACE(12))
