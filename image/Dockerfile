@@ -72,8 +72,8 @@ ARG XRDP_VERSION=0.10.6.1-3
 ARG XORGXRDP_VERSION=1:0.10.5-2
 # Pin the official package and verify its bytes; provenance is the signed
 # Google Linux repository's Packages index.
-ARG CHROME_VERSION=155.0.8059.84-1
-ARG CHROME_SHA256=8fbd2ae69cdf7ee98b7513c3396a7b5e06f974f8625fdd590df3091dd0c3e9de
+ARG CHROME_VERSION=157.0.8103.38-1
+ARG CHROME_SHA256=a62b277dc03da2cff50cc04589deb66f6875be339c066d46adb49b49eedb629d
 COPY image/apt/preferences /etc/apt/preferences.d/browser-desktop
 COPY image/apt/write-sources.sh /usr/local/sbin/write-sources.sh
 # ssl-cert generates a snakeoil key at install time; every image would share it.
